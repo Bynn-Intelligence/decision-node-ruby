@@ -90,6 +90,7 @@ dn = DecisionNode.new(
   max_retries: 2,
   headers: { "x-team" => "support-tools" },  # sent with every API request
   inline_threshold: 524_288,                 # bytes; see "Images"
+  upload_timeout: 60,                        # seconds for one image PUT to storage
   logger: nil                                # a Logger for debug lines
 )
 ```
@@ -102,6 +103,7 @@ The client checks its arguments when it is made and raises `ArgumentError` for a
 - `timeout` must be above 0 seconds.
 - `max_retries` must be a whole number, 0 or more.
 - `inline_threshold` must be a whole number of bytes, 0 or more.
+- `upload_timeout` must be above 0 seconds.
 
 | Method | Returns |
 |---|---|
@@ -185,7 +187,7 @@ dn.decide(
 | Bytes uploaded before | The cached upload id, whatever their size, until 5 minutes before the upload expires. |
 | `upload_id:` | The upload id as given. |
 
-An upload is one `POST /v1/uploads` for the request's images, then one `PUT` per image, in parallel, straight to storage with exactly the headers the API returned: never your API key, never your custom headers, and no redirect followed. Concurrent calls with the same bytes (`decide_many` over one document, for example) share one upload. The cache lives in the client's memory (at most 256 entries, keyed by the SHA-256 of the bytes and the media type) and is never written to disk. If the API answers that an upload the SDK placed has expired or been used up, the SDK uploads it again and sends the request once more. `upload(images)` uploads whatever the size and returns the upload ids, for use in later requests.
+An upload is one `POST /v1/uploads` for the request's images, then one `PUT` per image, in parallel, straight to storage with exactly the headers the API returned: never your API key, never your custom headers, and no redirect followed. Concurrent calls with the same bytes (`decide_many` over one document, for example) share one upload. Each `PUT` attempt has its own timeout, `upload_timeout` (60 seconds by default), apart from the API's `timeout`, so a 10 MB image on a slow link is not cut off at 10 seconds. The cache lives in the client's memory (at most 256 entries, keyed by the SHA-256 of the bytes and the media type) and is never written to disk. If the API answers that an upload the SDK placed has expired or been used up, the SDK uploads it again and sends the request once more. `upload(images)` uploads whatever the size and returns the upload ids, for use in later requests.
 
 Every local image is checked before any request: its format from the first bytes (JPEG, PNG or WebP; a `media_type:` you give must match them), at most 10,485,760 bytes, and at most 40,000,000 pixels, read from the image header without decoding it. A request takes at most 4 images, with unique ids. No image is ever resized or re-encoded. A file that cannot be read raises `ArgumentError` where the `Image` is made.
 
@@ -205,9 +207,22 @@ The SDK checks every fixed rule the API documents before any network call, so th
 | `Session#send`: see "Sessions" | `BadRequestError` | `api_usage_error` |
 | `batches.create` and `add`: a missing, empty, non-String or repeated `custom_id`, an add with no requests; `batches.list`: `offset` below 0, `limit` outside 1 to 100 | `BadRequestError` with the API's documented message | `api_usage_error` |
 
-After a `models` call the client also holds the limits `/v1/models` publishes and checks them: a session's `max_window` and `max_ttl_seconds`, a model that serves no sessions or answers no number questions, a batch's `requests_per_batch` and `max_custom_id_chars`, and the image and option bounds. Without that call those checks are left to the server. Limits counted in tokens are always the server's to judge. `decide_raw` sends its body unchecked.
+After a `models` call the client also holds the limits `/v1/models` publishes and checks them: a session's `max_window` and `max_ttl_seconds`, a model that serves no sessions or answers no number questions, a batch's `requests_per_batch` and `max_custom_id_chars`, and the image and option bounds. A request's model is found in that list by its name, else by the entry that states it as its `alias` or pinned `version`, so `decisionnode-latest` takes the limits of the version it points to. Without that call, or for a model the list does not state, those checks are left to the server. Limits counted in tokens are always the server's to judge. `decide_raw` sends its body unchecked.
 
 A bad argument raises Ruby's own `ArgumentError`, never a DecisionNode class: a `base_url`, `timeout`, `max_retries` or `inline_threshold` the client refuses, a `concurrency` below 1, an empty question map, an image file that cannot be read, and a value that cannot be serialised as JSON. A missing API key raises `AuthenticationError`, also without a request.
+
+### Checking without sending
+
+`check_request(method, request)` runs every check a call would run before sending, alone: it raises exactly what the call would raise (held `/v1/models` limits included) and returns `nil` when the request would be sent. It sends nothing and uploads nothing. `method` is `"decide"`, `"systemone"`, `"open_session"`, `"batches.create"` or `"batches.add"`; `request` holds the call's arguments, as a Hash or as keywords.
+
+```ruby
+dn.check_request("decide", state: ticket, questions: questions, images: images) # => nil
+dn.check_request("open_session", questions: questions, window: 128)
+# raises DecisionNode::ValidationError, as open_session would
+dn.check_request("batches.create", requests: requests)
+```
+
+`Session#check_frame(frame:, image:, questions:, reset:, seq:)` does the same for a frame: it raises what `Session#send` would and writes nothing, uses no `seq`, and needs no connected socket.
 
 ## Sessions
 
@@ -286,7 +301,7 @@ The calls one by one, on `dn.batches`:
 | `finalize(batch_id)` | `POST /v1/batches/{id}/finalize` | `Batch` |
 | `get(batch_id)` | `GET /v1/batches/{id}` | `Batch` |
 | `list(offset: nil, limit: nil)` | `GET /v1/batches` | `BatchPage` (`batches`, `offset`, `limit`, `total`, `next_offset`) |
-| `results(batch_id)` | `GET /v1/batches/{id}/results` | One `BatchResult` per request, in upload order |
+| `results(batch_id)` | `GET /v1/batches/{id}/results`, read from the network line by line as it arrives | One `BatchResult` per request, in upload order; with a block, each one as its line arrives |
 | `cancel(batch_id)` | `POST /v1/batches/{id}/cancel` | `Batch` |
 
 A `Batch` has every field of the batch object by name (`id`, `state`, `counters`, `created_at`, `finalized_at`, `expires_at`, `ended_at`, `results_url`, `results_expire_at`, `price_factor`, `usage`, `error`) and `ended?`. A `BatchResult` has `custom_id`, `status` (an Integer, or `"expired"` or `"cancelled"`), `headers`, `decision` (a `Decision` for a 200 line) and `error` (for an error line, the error `decide` would have raised, as a value).
@@ -370,6 +385,7 @@ end
 | Base URL | `base_url:` | `DECISIONNODE_BASE_URL` | `https://api.decisionnode.com` |
 | Model | `model:` | `DECISIONNODE_MODEL` | `decisionnode-latest` |
 | Inline threshold | `inline_threshold:` | | `524288` bytes |
+| Upload timeout | `upload_timeout:` | | `60` seconds per image `PUT` |
 
 Model ids: `decisionnode-latest`, `decisionnode-flash-latest`, and the pinned versions `decisionnode-1.0` and `decisionnode-1.0-flash`.
 
@@ -392,6 +408,7 @@ dn = DecisionNode.new(http_client: transport)
 To use another HTTP stack, pass `http_client:`, an object with `call(method, url, headers, body, timeout)` that returns a `DecisionNode::HTTPResponse` and raises `DecisionNode::TimeoutError` or `DecisionNode::ConnectionError` when no response arrives. It is called with `GET`, `POST`, `DELETE`, and `PUT` for image uploads to storage, which must carry exactly the headers given. The client holds every transport to the same rules as its own:
 
 - The timeout covers the whole call: the client ends an attempt at its deadline, whatever the transport is doing.
+- A transport may also answer `stream(method, url, headers, timeout) { |chunk| ... }`, handing a 2xx body over in chunks as it arrives; batch results are then read line by line. Without it they are read from the whole body.
 - Redirects are never followed, so the API key is never sent to another URL. A transport must return a 3xx as it is and say so by answering `false` to `follow_redirects?`; any other transport is refused with `ArgumentError` when the client is made. A transport may also set `url` on the `HTTPResponse` to the address the response came from; a response from any other address than the one requested raises `DecisionNodeError`.
 
 ```ruby
@@ -405,7 +422,7 @@ class MyTransport
 end
 ```
 
-Sessions use their own socket, opened with the standard library's TCP and TLS sockets and the `websocket-driver` gem, with certificate and hostname checks always on.
+A session's socket is opened with the standard library's TCP and TLS sockets and the `websocket-driver` gem, and follows the default transport as far as a WebSocket can: it goes through the transport's `proxy:` (else the proxy the environment names, `no_proxy` honoured) with an HTTP `CONNECT` tunnel, and its TLS takes the `net_http:` trust and client certificate settings (`ca_file`, `ca_path`, `cert_store`, `cert`, `key`, and the version and cipher settings). Certificate and hostname checks are always on. A transport of your own can say what sessions take by answering `session_options` with `{proxy:, tls:}`; without it the environment's proxy and the default trust apply.
 
 ## Development
 
@@ -415,7 +432,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.5) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.6) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.1 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 

@@ -18,6 +18,10 @@ First version, implementing version 1.1 of the DecisionNode SDK surface: every p
 - Sessions: `open_session`, `Session#connect`, `#send`, `#replies`, `#next_event`, `#end` and `#close`, with `Reply`, `FrameError` and `SessionClosed` values, `seq` counted from 1, pings answered, a silent socket treated as lost, and `supervise`, which reopens or reconnects by close code with a capped backoff. A session limit raises `SessionLimitError`, a `RateLimitError`, and is never retried.
 - The Batch API: `batches.create`, `add` (split at 10 MiB), `finalize` (a 409 resolved with `get`), `get`, `list`, `results` and `cancel`, with `Batch`, `BatchPage` and `BatchResult`; create, add and finalize retried only on 429 and 529. `run_batch` runs the whole lifecycle with a poll interval of at least 10 seconds, the server's `Retry-After` when longer, and a timeout.
 - `ModelInfo#sessions`, `#batch` and `#limit` for the limits `GET /v1/models` publishes.
+- `check_request(method, request)` and `Session#check_frame`: every local check of a call, run alone; they raise what the call would raise and send and upload nothing. A model's held `/v1/models` limits are found by its name, else by an entry's `alias` or pinned `version`.
+- `upload_timeout:` (default 60 seconds): each image `PUT` to storage has its own timeout, apart from the API's `timeout`.
+- `batches.results` reads the JSON Lines file from the network line by line (`NetHTTPTransport#stream`), however many lines it has, and takes a block to handle each result as it arrives.
+- A session's socket goes through the transport's proxy (else the environment's) with a `CONNECT` tunnel and takes its `net_http:` TLS settings, such as a company CA (`NetHTTPTransport#session_options`).
 - `gate` with fixed question wording, the same in every DecisionNode SDK.
 - `decide_many` returns one `DecisionResult` per request, a `Decision` or a `DecisionNodeError` (an unexpected error is wrapped in `DecisionNodeError` with the original as its `cause`). Every request is checked before any is sent: a `concurrency` below 1 or any invalid request raises `ArgumentError` and nothing is sent.
 - `check`, `classify` and `score` raise `ServerError`, with `status`, `request_id` and `reason`, when their own answer is missing or malformed; `decide` returns it as `UnknownAnswer`.
@@ -35,4 +39,4 @@ First version, implementing version 1.1 of the DecisionNode SDK surface: every p
 - `DecisionNode::SPEC_VERSION`, the version of the SDK surface this gem implements (`"1.1"`), and `DecisionNode::DEFAULT_INLINE_THRESHOLD`.
 - Configuration through `DECISIONNODE_API_KEY`, `DECISIONNODE_BASE_URL` and `DECISIONNODE_MODEL`; an empty argument counts as not given.
 - Optional debug logging that never prints state, questions or answers.
-- The conformance tests fail, never skip, when `DECISIONNODE_CONFORMANCE_DIR` is not set. CI runs conformance suite 1.5 at a pinned commit, with every action pinned to a commit SHA and `persist-credentials: false` on every checkout.
+- The conformance tests fail, never skip, when `DECISIONNODE_CONFORMANCE_DIR` is not set. CI runs conformance suite 1.6 at a pinned commit, with every action pinned to a commit SHA and `persist-credentials: false` on every checkout.
