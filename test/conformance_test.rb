@@ -67,10 +67,16 @@ module Conformance
     query = { "session" => session }
     query["path"] = path if path
     uri = URI("#{mock_url}/_mock/requests?#{URI.encode_www_form(query)}")
-    out = JSON.parse(Net::HTTP.get(uri))
+    out = JSON.parse(Net::HTTP.get(uri), max_nesting: false)
     out["pongs"] = out["requests"].count { |r| r["method"] == "PONG" }
     out["requests"] = out["requests"].reject { |r| r["method"] == "PONG" }
     out
+  end
+
+  # The session's clock in epoch seconds: the SDK's clock for a case with client.clock "mock".
+  def mock_clock_now(session)
+    uri = URI("#{mock_url}/_mock/clock?#{URI.encode_www_form('session' => session)}")
+    Float(JSON.parse(Net::HTTP.get(uri)).fetch("epoch_seconds"))
   end
 
   def mock_clock(session, body)
@@ -144,7 +150,7 @@ module Conformance
 
   # Key order of the object at `ptr` in a JSON text.
   def ordered_keys_of(text, ptr)
-    doc = JSON.parse(text, object_class: OrderedKeys)
+    doc = JSON.parse(text, object_class: OrderedKeys, max_nesting: false)
     found, node = pointer(doc, ptr)
     found && node.is_a?(Hash) ? node.keys : []
   end
@@ -299,6 +305,7 @@ module Conformance
       case key
       when "$ref" then return resolve_ref(args, ctx)
       when "$text" then return args["repeat"] * args["times"]
+      when "$nest" then return args["depth"].times.reduce(decode(args["value"], ctx)) { |inner, _| [inner] }
       when "$truth" then return DecisionNode.truth(args["instructions"], if_true: args["true"], if_false: args["false"])
       when "$choice" then return DecisionNode.choice(args["instructions"], args["options"])
       when "$score" then return DecisionNode.score(args["instructions"], args["levels"])
@@ -485,9 +492,9 @@ module Conformance
   def parse_jsonl(text)
     stripped = text.to_s.strip
     return [] if stripped.empty?
-    return JSON.parse(stripped) if stripped.start_with?("[")
+    return JSON.parse(stripped, max_nesting: false) if stripped.start_with?("[")
 
-    text.split("\n").reject { |l| l.strip.empty? }.map { |l| JSON.parse(l) }
+    text.split("\n").reject { |l| l.strip.empty? }.map { |l| JSON.parse(l, max_nesting: false) }
   end
 
   def check_request!(exp, got, where)
@@ -545,7 +552,7 @@ module Conformance
       return
     end
     text = got["body_text"].to_s
-    body = text.empty? ? nil : JSON.parse(text)
+    body = text.empty? ? nil : JSON.parse(text, max_nesting: false)
     if exp.key?("body")
       raise Fail, "#{where} body: expected #{short(exp['body'])}, got #{short(body)}" unless same?(exp["body"], body)
     elsif !exp.key?("body_checks") && !text.empty? && !exp["any_body"]
@@ -736,7 +743,16 @@ module Conformance
       elsif step.key?("send")
         args = step["send"].dup
         name = args.delete("session")
-        ctx.fetch(name).send(**kwargs(args.transform_values { |v| decode(v, ctx) }))
+        begin
+          ctx.fetch(name).send(**kwargs(args.transform_values { |v| decode(v, ctx) }))
+        rescue DecisionNode::DecisionNodeError, ArgumentError => e
+          # A frame that breaks a fixed rule is refused locally and nothing is sent.
+          raise unless step.key?("outcome")
+
+          check_outcome!(step["outcome"], e, "#{where}.outcome")
+        else
+          raise Fail, "#{where}: expected #{step['outcome']['error'] || step['outcome']}, the frame was sent" if step.key?("outcome")
+        end
       elsif step.key?("read")
         read_events(step["read"], ctx, events, where)
       elsif step.key?("end")
@@ -836,6 +852,8 @@ module Conformance
       # An argument error may come from the constructor (a bad base_url, timeout
       # or max_retries) or from the call; both count, as long as nothing was sent.
       client = make_client(case_, extra)
+      # The SDK's injectable clock reads the mock's clock for this session.
+      client.instance_variable_set(:@clock, -> { mock_clock_now(session) }) if case_.dig("client", "clock") == "mock"
       waits = record_waits(client) if exp.key?("scheduled_waits_ms")
       if case_.key?("steps")
         run_steps(case_, client, session, events)
