@@ -19,6 +19,16 @@ require_relative "decisionnode/errors"
 require_relative "decisionnode/questions"
 require_relative "decisionnode/image_header"
 require_relative "decisionnode/image"
+require_relative "decisionnode/checks"
 require_relative "decisionnode/results"
 require_relative "decisionnode/transport"
+require_relative "decisionnode/uploads"
+require_relative "decisionnode/session"
+require_relative "decisionnode/supervisor"
+require_relative "decisionnode/batches"
 require_relative "decisionnode/client"
+
+class DecisionNode
+  # Loaded with the WebSocket library on the first session.
+  autoload :SessionStream, File.expand_path("decisionnode/session_stream", __dir__)
+end

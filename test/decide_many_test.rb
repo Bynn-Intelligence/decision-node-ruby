@@ -64,7 +64,12 @@ class DecideManyTest < Minitest::Test
       assert_raises(ArgumentError, bad.inspect) { client(http).decide_many(requests(2) + [bad], concurrency: 1) }
       assert_empty http.calls, bad.inspect
     end
-    assert_raises(ArgumentError) { DecisionNode::Image.new("img", data: gif) }
+    # Bytes in an unknown format are a request the API would refuse: a
+    # BadRequestError for the whole call, and nothing is sent.
+    http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
+    bad = { state: "c", questions: { "q" => DecisionNode.truth("?") }, images: [DecisionNode::Image.new("img", data: gif)] }
+    assert_raises(DecisionNode::BadRequestError) { client(http).decide_many(requests(2) + [bad], concurrency: 1) }
+    assert_empty http.calls
   end
 
   def test_unexpected_errors_become_decision_results

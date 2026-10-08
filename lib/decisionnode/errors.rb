@@ -36,7 +36,10 @@ class DecisionNode
     end
   end
 
-  # 400: the request is malformed or breaks a limit of the model.
+  # 400: the request is malformed or breaks a limit of the model. Also raised
+  # before any request when the SDK finds a fault the API would answer with a
+  # 400 (an image, an option or level count): such an error has no status and
+  # no request id.
   class BadRequestError < DecisionNodeError; end
 
   # 400 with `error_type` `max_tokens_exceeded`: the input is too long for the model.
@@ -68,7 +71,8 @@ class DecisionNode
   # 404: the path or resource does not exist.
   class NotFoundError < DecisionNodeError; end
 
-  # 422: the request body does not match the schema.
+  # 422: the request body does not match the schema. Also raised before any
+  # request for a number grid the API would refuse, or a score with no levels.
   class ValidationError < DecisionNodeError
     # The server's list of validation entries.
     attr_reader :entries
@@ -89,6 +93,10 @@ class DecisionNode
       super(message, **kw)
     end
   end
+
+  # 429 with `error_type` `session_limit_exceeded`: the key already holds as
+  # many open sessions as it may. Never retried.
+  class SessionLimitError < RateLimitError; end
 
   # 529: the service is overloaded.
   class OverloadedError < DecisionNodeError

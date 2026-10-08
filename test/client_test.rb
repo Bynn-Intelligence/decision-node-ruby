@@ -72,7 +72,7 @@ class ClientTest < Minitest::Test
   end
 
   def test_images
-    png = "\x89PNG\r\n\x1A\nrest".b
+    png = File.binread(File.join(__dir__, "fixtures", "images", "image.png"))
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
     client(http).decide(questions: { "q" => DecisionNode.truth("?") },
                         images: [DecisionNode::Image.new("a", data: png),
@@ -82,23 +82,38 @@ class ClientTest < Minitest::Test
     assert_equal({ "id" => "b", "url" => "https://example.com/b.jpg" }, images[1])
   end
 
-  def test_image_errors_are_raised_before_sending
+  def test_image_argument_errors_are_raised_where_the_image_is_made
     assert_raises(ArgumentError) { DecisionNode::Image.new("a", path: "/nonexistent/file.png") }
-    assert_raises(ArgumentError) { DecisionNode::Image.new("a", data: "plain text") }
+    assert_raises(ArgumentError) { DecisionNode::Image.new("a", data: 42) }
     assert_raises(ArgumentError) { DecisionNode::Image.new("a") }
+    assert_raises(ArgumentError) { DecisionNode::Image.new("a", url: "https://example.com/a.png", data: "x") }
+  end
+
+  def test_image_faults_are_bad_requests_before_sending
+    http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
+    error = assert_raises(DecisionNode::BadRequestError) do
+      client(http).decide(questions: { "q" => DecisionNode.truth("?") },
+                          images: [DecisionNode::Image.new("a", data: "plain text")])
+    end
+    assert_equal "api_usage_error", error.error_type
+    assert_nil error.status
+    assert_nil error.request_id
+    assert_empty http.calls
   end
 
   def test_image_bytes_without_media_type_are_sniffed
-    jpeg = "\xFF\xD8\xFF\xE0rest".b
+    jpeg = File.binread(File.join(__dir__, "fixtures", "images", "baseline.jpg"))
     assert_equal "image/jpeg", DecisionNode::Image.new("a", data: jpeg).media_type
     assert_equal "image/jpeg", DecisionNode::Image.new("a", data: jpeg, media_type: "").media_type
-    assert_equal "image/png", DecisionNode::Image.new("a", data: jpeg, media_type: "image/png").media_type
+    # A declared type that differs from the bytes is refused before sending.
+    mismatch = DecisionNode::Image.new("a", data: jpeg, media_type: "image/png")
+    assert_raises(DecisionNode::BadRequestError) { mismatch.validate! }
   end
 
   def test_image_file_is_read_when_made
     Dir.mktmpdir do |dir|
       path = File.join(dir, "a.png")
-      File.binwrite(path, "\x89PNG\r\n\x1A\nrest".b)
+      File.binwrite(path, File.binread(File.join(__dir__, "fixtures", "images", "image.png")))
       image = DecisionNode::Image.new("a", path: path)
       File.delete(path)
       assert_equal "image/png", image.to_h["media_type"]
@@ -191,7 +206,8 @@ class ClientTest < Minitest::Test
   end
 
   def test_spec_version_and_user_agent
-    assert_equal "1.0", DecisionNode::SPEC_VERSION
+    assert_equal "1.1", DecisionNode::SPEC_VERSION
+    assert_equal 524_288, DecisionNode::DEFAULT_INLINE_THRESHOLD
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
     client(http).decide(questions: { "q" => DecisionNode.truth("?") })
     assert_equal "decisionnode-ruby/#{DecisionNode::VERSION}", http.calls.first.headers["User-Agent"]
@@ -357,12 +373,16 @@ class ClientTest < Minitest::Test
   def test_no_extra_error_classes
     errors = DecisionNode.constants.select do |name|
       value = DecisionNode.const_get(name)
-      value.is_a?(Class) && value <= Exception
+      value.is_a?(Class) && value <= DecisionNode::DecisionNodeError
     end
     expected = %w[DecisionNodeError BadRequestError ContextLimitError AuthenticationError InsufficientCreditError
                   PermissionDeniedError RefusalError NotFoundError ValidationError RateLimitError OverloadedError
-                  ServerError ConnectionError TimeoutError]
+                  ServerError ConnectionError TimeoutError SessionLimitError]
     assert_equal expected.sort, errors.map(&:to_s).sort
+    # The one subclass spec 1.1 adds is a RateLimitError, so a rescue of 429s catches it.
+    assert_operator DecisionNode::SessionLimitError, :<, DecisionNode::RateLimitError
+    # The end of a session's stream is a session value, not an API error.
+    refute_operator DecisionNode::SessionClosed, :<, DecisionNode::DecisionNodeError
   end
 
   def test_logger_never_prints_the_body
