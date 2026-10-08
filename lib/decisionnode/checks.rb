@@ -17,7 +17,9 @@ class DecisionNode
   # client holds from an earlier `models` call, and skipped when it holds none.
   # Token counts and anything that depends on server state stay the server's.
   module Checks
-    MAX_IMAGES = 4
+    MAX_IMAGES = 16
+    MAX_VIDEOS = 4
+    MAX_FPS = 4
     MAX_CHOICE_OPTIONS = 255
     MAX_SCORE_LEVELS = 10
     MAX_GRID_VALUES = 4_096
@@ -107,9 +109,9 @@ class DecisionNode
     def images!(images, limits: {})
       return nil if images.nil? || images.empty?
 
-      most = limits["max_images"] || MAX_IMAGES
-      biggest = limits["max_image_bytes"] || Image::MAX_BYTES
-      usage("Too many images. Must have at most #{most} images.") if images.size > most
+      most = held(limits, "max_images") || MAX_IMAGES
+      biggest = held(limits, "max_image_bytes") || Image::MAX_BYTES
+      usage("Too many images: #{images.size}, the limit is #{most}.") if images.size > most
       seen = {}
       images.each_with_index do |img, i|
         id = img.is_a?(Image) ? img.id : (img["id"] || img[:id])
@@ -186,6 +188,96 @@ class DecisionNode
       BLOCKED_NETWORKS.any? { |net| net.family == addr.family && net.include?(addr) }
     rescue IPAddr::Error, ArgumentError
       false # a DNS name: resolved and judged by the server
+    end
+
+    # An image limit the client holds from /v1/models: on the model's entry,
+    # or inside its `images` object.
+    def held(limits, name)
+      value = limits[name]
+      value = limits["images"][name] if value.nil? && limits["images"].is_a?(Hash)
+      value.is_a?(Integer) && value.positive? ? value : nil
+    end
+
+    # ---- videos
+
+    # Checks a request's videos in the API's order, after its images: the
+    # count, then each video's id (unique across images and videos), its
+    # frames (each time a number of at least 0, larger than the one before,
+    # and a JPEG, PNG or WebP media type), `fps`, `start` and `end`. The
+    # frame counts, a frame's bytes and the window holding a frame are the
+    # server's to judge.
+    def videos!(videos, image_ids: [])
+      return nil if videos.nil? || videos.empty?
+
+      usage("Too many videos: #{videos.size}, the limit is #{MAX_VIDEOS}.") if videos.size > MAX_VIDEOS
+      seen = image_ids.to_h { |id| [id, true] }
+      videos.each_with_index do |video, i|
+        id = video_field(video, "id")
+        usage("Video #{i} needs an id.") unless id.is_a?(String) && !id.empty?
+        usage("Video id #{py_repr(id)} is used twice (ids are unique across images and videos).") if seen.key?(id)
+
+        seen[id] = true
+        video!(id, video)
+      end
+      nil
+    end
+
+    def video!(id, video)
+      frames = video_field(video, "frames")
+      video_usage(id, "frames must be a non-empty list of frames") unless frames.is_a?(Array) && !frames.empty?
+      before = nil
+      frames.each_with_index do |frame, n|
+        video_usage(id, "frame #{n} must be an object with t, media_type and data") unless frame.is_a?(Frame) || frame.is_a?(Hash)
+        t = video_field(frame, "t")
+        video_usage(id, "frame #{n}: t must be a number of seconds, at least 0") unless seconds?(t) && t >= 0
+        video_usage(id, "frame #{n}: t must be larger than the frame before it (#{g(before)})") if before && t <= before
+        before = t
+        video_usage(id, "frame #{n}: data must be base64 text") unless frame.is_a?(Frame) || video_field(frame, "data").is_a?(String)
+        unless MEDIA_TYPES.include?(video_field(frame, "media_type"))
+          video_usage(id, "frame #{n}: media_type must be one of #{MEDIA_TYPES.join(', ')}")
+        end
+      end
+      fps = video_field(video, "fps")
+      video_usage(id, "fps must be a number above 0 and at most #{g(MAX_FPS)}") unless fps.nil? || (seconds?(fps) && fps.positive? && fps <= MAX_FPS)
+      %w[start end].each do |name|
+        value = video_field(video, name)
+        video_usage(id, "#{name} must be a number of seconds, at least 0") unless value.nil? || (seconds?(value) && value >= 0)
+      end
+      last = video_field(video, "end")
+      video_usage(id, "end must be after start") if !last.nil? && last <= (video_field(video, "start") || 0)
+    end
+
+    # A field of a Video or Frame, or of its wire-form Hash (String or Symbol keys).
+    def video_field(item, name)
+      case item
+      when Video, Frame then item.public_send(name)
+      when Hash then item.key?(name) ? item[name] : item[name.to_sym]
+      end
+    end
+
+    # A finite JSON number, never a boolean.
+    def seconds?(value)
+      (value.is_a?(Integer) || value.is_a?(Float)) && value.finite?
+    end
+
+    # A number as the API writes it in a message (printf's %g): 1.5, 4, 1e+06.
+    def g(value)
+      format("%g", value)
+    end
+
+    # A string quoted as the API quotes an id in a message: 'dock', or
+    # "it's" when the id holds a single quote and no double quote.
+    def py_repr(text)
+      quote = text.include?("'") && !text.include?('"') ? '"' : "'"
+      body = text.gsub("\\") { "\\\\" }.gsub(quote) { "\\#{quote}" }
+      body = body.gsub(/[\x00-\x1f\x7f]/) { |c| REPR_ESCAPES.fetch(c) { format("\\x%02x", c.ord) } }
+      "#{quote}#{body}#{quote}"
+    end
+
+    REPR_ESCAPES = { "\n" => "\\n", "\r" => "\\r", "\t" => "\\t" }.freeze
+
+    def video_usage(id, problem)
+      usage("Video #{py_repr(id)}: #{problem}.")
     end
 
     # ---- sessions

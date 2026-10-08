@@ -162,8 +162,10 @@ class DecisionNode
     }.freeze
   end
 
-  # Token counts of a decision.
-  Usage = Struct.new(:input_tokens, :output_tokens)
+  # Token counts of a decision and, for a request with videos, the frames the
+  # API read (an Integer) and the seconds of video they cover (a number as
+  # received); each nil when the response has none.
+  Usage = Struct.new(:input_tokens, :output_tokens, :video_frames, :video_seconds)
 
   # The result of the safety check that runs on every decision on the hosted API,
   # parsed from the `x-decisionnode-safety` response header.
@@ -258,6 +260,9 @@ class DecisionNode
     attr_reader :latency_ms
     # A Safety, or nil when the server sent no safety header.
     attr_reader :safety
+    # What the API says it changed while reading the request's videos (a
+    # lower rate or resolution), each sentence as sent; empty when it sent none.
+    attr_reader :warnings
     # The parsed response body.
     attr_reader :raw
     # The response headers, names in lower case.
@@ -270,7 +275,10 @@ class DecisionNode
       @model = body["model"]
       @answers = Answer.map(body["answers"])
       usage = body["usage"].is_a?(Hash) ? body["usage"] : {}
-      @usage = Usage.new(usage["input_tokens"], usage["output_tokens"])
+      @usage = Usage.new(usage["input_tokens"], usage["output_tokens"],
+                         usage["video_frames"].is_a?(Integer) ? usage["video_frames"] : nil,
+                         usage["video_seconds"].is_a?(Numeric) ? usage["video_seconds"] : nil)
+      @warnings = body["warnings"].is_a?(Array) ? body["warnings"].grep(String).freeze : [].freeze
       @request_id = headers["x-request-id"]
       @latency_ms = parse_latency(headers["x-decisionnode-latency-ms"])
       @safety = Safety.parse(headers["x-decisionnode-safety"])

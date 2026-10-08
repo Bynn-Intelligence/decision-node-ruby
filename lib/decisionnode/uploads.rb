@@ -71,7 +71,7 @@ class DecisionNode
     # image (from the cache when the same bytes were uploaded before). URL
     # images and upload ids cannot be uploaded and raise ArgumentError.
     #
-    # Sends one `POST /v1/uploads` for up to 4 images not in the cache, then
+    # Sends one `POST /v1/uploads` for up to 16 images not in the cache, then
     # one `PUT` per image, in parallel. An id names the upload for an hour, in
     # any image slot: `Image.new("receipt", upload_id: id)`.
     def upload(images)
@@ -85,7 +85,7 @@ class DecisionNode
       Checks.images!(images, limits: limits_for(nil))
       ids = images.map { |img| @uploads.get(cache_key(img)) }
       missing = images.each_index.reject { |i| ids[i] }
-      # One presign takes up to 4 files.
+      # One presign takes up to 16 files.
       missing.each_slice(Checks::MAX_IMAGES) do |slice|
         fresh = upload_images(slice.map { |i| images[i] })
         slice.each_with_index { |i, j| ids[i] = fresh[j] }

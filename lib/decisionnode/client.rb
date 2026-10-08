@@ -117,21 +117,23 @@ class DecisionNode
   #
   # state::     what is judged: a String or any JSON value (default "").
   # questions:: question id to question (a builder's result or a wire-form Hash).
-  # images::    an Array of Image (or wire-form Hashes).
+  # images::    an Array of Image (or wire-form Hashes), up to 16.
+  # videos::    an Array of Video (or wire-form Hashes), up to 4, each sent as
+  #             its frames; available when the API enables video.
   # model::     overrides the client's model for this call (nil or "" uses the client's).
   #
   # The request is checked before anything is sent: a fault the API would
   # refuse raises BadRequestError or ValidationError with no request made.
-  def decide(state: UNSET, questions: nil, images: nil, model: nil)
-    decision_call("/v1/decide", state, questions, images, model).first
+  def decide(state: UNSET, questions: nil, images: nil, videos: nil, model: nil)
+    decision_call("/v1/decide", state, questions, images, videos, model).first
   end
 
   # Sends one request to `POST /v1/systemone`, the strict path, and returns a
   # Decision. It takes `truth`, `choice` and `score` questions; a truth question
   # is sent with the type name that path takes, and read back as a TruthAnswer.
   # The model is always sent.
-  def systemone(state: UNSET, questions: nil, images: nil, model: nil)
-    decision_call("/v1/systemone", state, questions, images, model, strict: true).first
+  def systemone(state: UNSET, questions: nil, images: nil, videos: nil, model: nil)
+    decision_call("/v1/systemone", state, questions, images, videos, model, strict: true).first
   end
 
   # Runs several #decide calls, at most `concurrency` at a time. Each request is
@@ -181,37 +183,37 @@ class DecisionNode
   # Asks one `truth` question (id "check") and returns its TruthAnswer.
   # An answer that is missing or malformed raises ServerError, since a
   # TruthAnswer is promised; #decide would return an UnknownAnswer instead.
-  def check(state: UNSET, instructions: nil, if_true: nil, if_false: nil, images: nil, model: nil)
+  def check(state: UNSET, instructions: nil, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil)
     question = Questions.truth(instructions, if_true: if_true, if_false: if_false)
-    helper_answer("check", TruthAnswer, state, question, images, model)
+    helper_answer("check", TruthAnswer, state, question, images, videos, model)
   end
 
   # Asks one `choice` question (id "classify") and returns its ChoiceAnswer.
   # An answer that is missing or malformed raises ServerError.
-  def classify(state: UNSET, instructions: nil, options: nil, images: nil, model: nil)
-    helper_answer("classify", ChoiceAnswer, state, Questions.choice(instructions, options), images, model)
+  def classify(state: UNSET, instructions: nil, options: nil, images: nil, videos: nil, model: nil)
+    helper_answer("classify", ChoiceAnswer, state, Questions.choice(instructions, options), images, videos, model)
   end
 
   # Asks one `score` question (id "score") and returns its ScoreAnswer.
   # An answer that is missing or malformed raises ServerError.
-  def score(state: UNSET, instructions: nil, levels: nil, images: nil, model: nil)
-    helper_answer("score", ScoreAnswer, state, Questions.score(instructions, levels), images, model)
+  def score(state: UNSET, instructions: nil, levels: nil, images: nil, videos: nil, model: nil)
+    helper_answer("score", ScoreAnswer, state, Questions.score(instructions, levels), images, videos, model)
   end
 
   # Asks one `number` question (id "number") and returns its NumberAnswer.
   # `min`, `max` and `step` left out take the server's defaults (0, 255, 1).
   # An answer that is missing or malformed raises ServerError.
-  def number(state: UNSET, instructions: nil, min: nil, max: nil, step: nil, images: nil, model: nil)
+  def number(state: UNSET, instructions: nil, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil)
     question = Questions.number(instructions, min: min, max: max, step: step)
-    helper_answer("number", NumberAnswer, state, question, images, model)
+    helper_answer("number", NumberAnswer, state, question, images, videos, model)
   end
 
   # Judges an action before it runs. Sends three questions: "risk" (score),
   # "touches_production" (truth) and "verdict" (choice of allow, confirm or block).
-  def gate(action:, context: nil, images: nil, model: nil)
+  def gate(action:, context: nil, images: nil, videos: nil, model: nil)
     state = { "action" => action }
     state["context"] = context unless context.nil?
-    decide(state: state, questions: GATE_QUESTIONS, images: images, model: model)
+    decide(state: state, questions: GATE_QUESTIONS, images: images, videos: videos, model: model)
   end
 
   # Lists the models with their published limits, as ModelInfo entries. The
@@ -370,8 +372,9 @@ class DecisionNode
   private_constant :AttemptDeadline
 
   # A request checked and ready to send: the parts of its body, with its
-  # images still to be placed (inline or uploaded) when it is sent.
-  Prepared = Struct.new(:state, :questions, :images, :model, :encoded)
+  # images still to be placed (inline or uploaded) when it is sent. Videos
+  # are in their wire form already: frames always go inline.
+  Prepared = Struct.new(:state, :questions, :images, :videos, :model, :encoded)
   private_constant :Prepared
 
   def checked_base_url(url)
@@ -457,7 +460,7 @@ class DecisionNode
     value.nil? || value.empty? ? nil : value
   end
 
-  DECIDE_ARGS = %i[state questions images model].freeze
+  DECIDE_ARGS = %i[state questions images videos model].freeze
   private_constant :DECIDE_ARGS
 
   def decide_args(item)
@@ -505,13 +508,17 @@ class DecisionNode
     entry ? entry.merge("model" => name) : {}
   end
 
-  # Every fixed rule of a request before it is sent: the body (its images as
-  # placeholders, so the nesting counts them), then the images themselves.
-  def check_body(body, images, profile: :decide)
-    probe = images.empty? ? body : body.merge("images" => Array.new(images.size) { { "id" => "" } })
+  # Every fixed rule of a request before it is sent: the body (its images and
+  # videos as placeholders, so the nesting counts them), then the images,
+  # then the videos.
+  def check_body(body, images, videos = [], profile: :decide)
+    probe = body
+    probe = probe.merge("images" => Array.new(images.size) { { "id" => "" } }) unless images.empty?
+    probe = probe.merge("videos" => Array.new(videos.size) { { "id" => "", "frames" => [{}] } }) unless videos.empty?
     limits = limits_for(body["model"])
     Checks.request!(probe, profile: profile, limits: limits)
     Checks.images!(images, limits: limits)
+    Checks.videos!(videos, image_ids: images.map { |img| img.is_a?(Image) ? img.id : (img["id"] || img[:id]) })
   end
 
   # The image list as given: an Array of Image or wire-form Hashes.
@@ -527,32 +534,54 @@ class DecisionNode
     images
   end
 
+  # The video list as given: an Array of Video or wire-form Hashes.
+  def prepared_videos(videos)
+    return [] if videos.nil?
+    raise ArgumentError, "videos must be an Array of DecisionNode::Video" unless videos.is_a?(Array)
+
+    videos.each do |video|
+      next if video.is_a?(Video) || video.is_a?(Hash)
+
+      raise ArgumentError, "each video must be a DecisionNode::Video or a wire-form Hash, got #{video.class}"
+    end
+    videos
+  end
+
+  # The wire form of a request's videos, or nil when it has none.
+  def video_wires(videos)
+    videos.empty? ? nil : videos.map { |v| v.is_a?(Video) ? v.to_h : v }
+  end
+
   # Checks a request and keeps what is needed to send it. A request without
   # local images is encoded once here.
-  def prepared_call(state: UNSET, questions: nil, images: nil, model: nil, strict: false)
+  def prepared_call(state: UNSET, questions: nil, images: nil, videos: nil, model: nil, strict: false)
     qs = prepared_questions(questions)
     qs = strict_questions(qs) if strict
     imgs = prepared_images(images)
+    vids = prepared_videos(videos)
     state = state.equal?(UNSET) || state.nil? ? "" : state
     model = given(model) || @model
-    check_body(body_for(model, state, qs, nil), imgs, profile: strict ? :systemone : :decide)
+    check_body(body_for(model, state, qs, nil), imgs, vids, profile: strict ? :systemone : :decide)
+    wired = video_wires(vids)
     if imgs.any? { |img| img.is_a?(Image) && img.local? }
-      encode(body_for(model, state, qs, nil)) # a value that cannot be serialised fails here
-      Prepared.new(state, qs, imgs, model, nil)
+      encode(body_for(model, state, qs, nil, wired)) # a value that cannot be serialised fails here
+      Prepared.new(state, qs, imgs, wired, model, nil)
     else
       wires = imgs.empty? ? nil : imgs.map { |img| img.is_a?(Image) ? img.to_h : img }
-      Prepared.new(state, qs, imgs, model, encode(body_for(model, state, qs, wires)))
+      Prepared.new(state, qs, imgs, wired, model, encode(body_for(model, state, qs, wires, wired)))
     end
   end
 
-  def body_for(model, state, questions, images)
+  def body_for(model, state, questions, images, videos = nil)
     body = { "model" => model, "state" => state, "questions" => questions }
     body["images"] = images unless images.nil?
+    body["videos"] = videos unless videos.nil?
     body
   end
 
-  def decision_call(path, state, questions, images, model, strict: false)
-    send_prepared(path, prepared_call(state: state, questions: questions, images: images, model: model, strict: strict))
+  def decision_call(path, state, questions, images, videos, model, strict: false)
+    call = prepared_call(state: state, questions: questions, images: images, videos: videos, model: model, strict: strict)
+    send_prepared(path, call)
   end
 
   # /v1/systemone takes the truth type under its own wire name.
@@ -571,7 +600,7 @@ class DecisionNode
 
     2.times do |attempt|
       wires, placed = image_wires(call.images)
-      data = encode(body_for(call.model, call.state, call.questions, wires.empty? ? nil : wires))
+      data = encode(body_for(call.model, call.state, call.questions, wires.empty? ? nil : wires, call.videos))
       begin
         body, headers, status = request("POST", path, data, encoded: true)
         return [Decision.new(body, headers), status]
@@ -585,8 +614,8 @@ class DecisionNode
 
   # The typed answer a helper promises, or a ServerError when it is missing
   # or malformed.
-  def helper_answer(id, klass, state, question, images, model)
-    decision, status = decision_call("/v1/decide", state, { id => question }, images, model)
+  def helper_answer(id, klass, state, question, images, videos, model)
+    decision, status = decision_call("/v1/decide", state, { id => question }, images, videos, model)
     answer = decision.answers[id]
     return answer if answer.is_a?(klass)
 
@@ -645,7 +674,7 @@ class DecisionNode
     raise ArgumentError, "batch request #{index + 1} must be a Hash, got #{req.class}" unless req.is_a?(Hash)
 
     args = req.to_h { |k, v| [k.to_s, v] }
-    [args, prepared_questions(args["questions"]), prepared_images(args["images"])]
+    [args, prepared_questions(args["questions"]), prepared_images(args["images"]), prepared_videos(args["videos"])]
   rescue ArgumentError => e
     raise e if e.message.start_with?("batch request")
 
@@ -657,20 +686,21 @@ class DecisionNode
   def check_lines(requests, allow_empty:)
     Checks.lines!(requests, allow_empty: allow_empty, limits: limits_for(nil))
     requests.each_with_index do |req, i|
-      args, questions, images = line_parts(req, i)
-      check_body(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil), images)
+      args, questions, images, videos = line_parts(req, i)
+      check_body(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil), images, videos)
     end
     nil
   end
 
   # One JSON Lines line: custom_id, model (always), state ("" when absent),
-  # questions, images, then any other field as given.
+  # questions, images, videos, then any other field as given.
   def batch_line(req, index)
-    args, questions, images = line_parts(req, index)
+    args, questions, images, videos = line_parts(req, index)
     line = { "custom_id" => args["custom_id"], "model" => given(args["model"]) || @model,
              "state" => args["state"].nil? ? "" : args["state"], "questions" => questions }
     line["images"] = image_wires(images).first unless images.empty?
-    args.each { |k, v| line[k] = v unless line.key?(k) || k == "images" }
+    line["videos"] = video_wires(videos) unless videos.empty?
+    args.each { |k, v| line[k] = v unless line.key?(k) || %w[images videos].include?(k) }
     "#{encode(line)}\n"
   end
 

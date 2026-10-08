@@ -4,6 +4,23 @@ All notable changes to this gem are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the gem uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - Unreleased
+
+Implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.2"`): sixteen images a request and videos sent as frames.
+
+### Added
+
+- Videos, available when the API enables them: `DecisionNode::Video.new(id, frames:, fps:, start:, end:)` and `DecisionNode::Frame.new(t, data:)`, `Frame.new(t, path:)` or `Frame.new(t, base64:, media_type:)`. A frame's media type comes from its bytes when none is given. `fps`, `start` and `end` are sent only when given. A Hash in the API's wire form is accepted wherever a `Video` or a `Frame` is.
+- `videos:` on `decide`, `systemone`, `check`, `classify`, `score`, `number`, `gate`, `decide_many`, batch requests and `check_request`. Frames are always sent inline as base64: never uploaded, never cached and never counted toward `inline_threshold`. Sessions take no videos.
+- The API's video form rules checked before sending, in its order and words, as `BadRequestError` with `error_type` `api_usage_error`: at most 4 videos, an id, ids unique across images and videos, a non-empty frame list, frame times of at least 0 and increasing, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` at least 0, and `end` after `start`. Frame counts, a frame's bytes and the window are left to the API.
+- `Decision#usage.video_frames` and `usage.video_seconds` (nil when the response has none) and `Decision#warnings` (each sentence as sent, an empty Array when none), also on batch results.
+
+### Changed
+
+- Up to 16 images a request (4 before), checked before sending; the 17th raises `BadRequestError` with the API's message, `Too many images: 17, the limit is 16.` A lower limit held from `models` (on the entry or in its `images` object) is checked the same way.
+- One `POST /v1/uploads` takes up to 16 files.
+- The conformance tests run suite 1.7.
+
 ## [0.1.0] - Unreleased
 
 First version, implementing version 1.1 of the DecisionNode SDK surface: every public call of the API.

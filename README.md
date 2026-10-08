@@ -107,14 +107,14 @@ The client checks its arguments when it is made and raises `ArgumentError` for a
 
 | Method | Returns |
 |---|---|
-| `decide(state:, questions:, images: nil, model: nil)` | A `DecisionNode::Decision` |
+| `decide(state:, questions:, images: nil, videos: nil, model: nil)` | A `DecisionNode::Decision` |
 | `decide_many(requests, concurrency: 8)` | One `DecisionNode::DecisionResult` per request, in input order: a `Decision`, or the `DecisionNodeError` that request ended with |
-| `check(state:, instructions:, if_true: nil, if_false: nil, images: nil, model: nil)` | A `TruthAnswer` |
-| `classify(state:, instructions:, options:, images: nil, model: nil)` | A `ChoiceAnswer` |
-| `score(state:, instructions:, levels:, images: nil, model: nil)` | A `ScoreAnswer` |
-| `number(state:, instructions:, min: nil, max: nil, step: nil, images: nil, model: nil)` | A `NumberAnswer` |
-| `gate(action:, context: nil, images: nil, model: nil)` | A `Decision` with the answers `risk` (score), `touches_production` (truth) and `verdict` (choice of `allow`, `confirm`, `block`) |
-| `systemone(state:, questions:, images: nil, model: nil)` | A `Decision` from `POST /v1/systemone`, the strict path: `truth`, `choice` and `score` questions, the model always sent |
+| `check(state:, instructions:, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil)` | A `TruthAnswer` |
+| `classify(state:, instructions:, options:, images: nil, videos: nil, model: nil)` | A `ChoiceAnswer` |
+| `score(state:, instructions:, levels:, images: nil, videos: nil, model: nil)` | A `ScoreAnswer` |
+| `number(state:, instructions:, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil)` | A `NumberAnswer` |
+| `gate(action:, context: nil, images: nil, videos: nil, model: nil)` | A `Decision` with the answers `risk` (score), `touches_production` (truth) and `verdict` (choice of `allow`, `confirm`, `block`) |
+| `systemone(state:, questions:, images: nil, videos: nil, model: nil)` | A `Decision` from `POST /v1/systemone`, the strict path: `truth`, `choice` and `score` questions, the model always sent |
 | `models` | An Array of `DecisionNode::ModelInfo` |
 | `upload(images)` | One upload id per image (see "Images") |
 | `open_session(questions:, state: nil, instructions: nil, model: nil, window: nil, ttl_seconds: nil)` | A `DecisionNode::Session` (see "Sessions") |
@@ -152,7 +152,7 @@ end
 
 | Class | Fields |
 |---|---|
-| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `request_id`, `latency_ms`, `safety`, `raw` |
+| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `usage.video_frames`, `usage.video_seconds`, `warnings`, `request_id`, `latency_ms`, `safety`, `raw` |
 | `TruthAnswer` | `truth` |
 | `ChoiceAnswer` | `choice`, `confidence`, `probabilities` (by option name, exactly as sent) |
 | `ScoreAnswer` | `score`, `confidence`, `probabilities` (by level index, an Integer), `legend` (level index to the level as sent) |
@@ -161,7 +161,7 @@ end
 
 Answers are read by question id. An answer of a type this version does not know is returned as a `DecisionNode::UnknownAnswer` with its `type` and `raw` fields, so the rest of the decision still parses. So is an answer of a known type with a field missing or of the wrong type (a `truth` answer without a number in `truth`, for example): the decision does not fail. All answer classes derive from `DecisionNode::Answer`.
 
-A token count or `latency_ms` the server did not send is `nil`, never 0.
+A token count or `latency_ms` the server did not send is `nil`, never 0. So are `usage.video_frames` and `usage.video_seconds` for a request without videos; `warnings` is then an empty Array.
 
 ## Images
 
@@ -189,11 +189,42 @@ dn.decide(
 
 An upload is one `POST /v1/uploads` for the request's images, then one `PUT` per image, in parallel, straight to storage with exactly the headers the API returned: never your API key, never your custom headers, and no redirect followed. Concurrent calls with the same bytes (`decide_many` over one document, for example) share one upload. Each `PUT` attempt has its own timeout, `upload_timeout` (60 seconds by default), apart from the API's `timeout`, so a 10 MB image on a slow link is not cut off at 10 seconds. The cache lives in the client's memory (at most 256 entries, keyed by the SHA-256 of the bytes and the media type) and is never written to disk. If the API answers that an upload the SDK placed has expired or been used up, the SDK uploads it again and sends the request once more. `upload(images)` uploads whatever the size and returns the upload ids, for use in later requests.
 
-Every local image is checked before any request: its format from the first bytes (JPEG, PNG or WebP; a `media_type:` you give must match them), at most 10,485,760 bytes, and at most 40,000,000 pixels, read from the image header without decoding it. A request takes at most 4 images, with unique ids. No image is ever resized or re-encoded. A file that cannot be read raises `ArgumentError` where the `Image` is made.
+Every local image is checked before any request: its format from the first bytes (JPEG, PNG or WebP; a `media_type:` you give must match them), at most 10,485,760 bytes, and at most 40,000,000 pixels, read from the image header without decoding it. A request takes up to 16 images (URLs, inline and uploaded together), with unique ids; one upload call takes all of them. Many large images can still pass the model's token limit, which the API answers with a `ContextLimitError`. No image is ever resized or re-encoded. A file that cannot be read raises `ArgumentError` where the `Image` is made.
+
+## Videos
+
+Video is available when the API enables it. A video is sent as frames you already hold, each with its time in seconds: only the frames go to the API, never a video file, a video URL or sound. Every question sees every video, the images and the state.
+
+```ruby
+# JPEG frames from a camera, two a second
+frames = camera_jpegs.each_with_index.map { |bytes, i| DecisionNode::Frame.new(30 + (i * 0.5), data: bytes) }
+
+d = dn.decide(
+  state: "Warehouse camera 4, loading dock.",
+  videos: [DecisionNode::Video.new("dock", frames: frames)],
+  questions: { fall: DecisionNode.truth("Does a person fall in the video?") }
+)
+d["fall"].truth             # => 0.12
+d.usage.video_frames        # the frames the API read
+d.usage.video_seconds       # the seconds of video they cover
+d.warnings                  # set when the API read a video at a lower rate or resolution
+```
+
+| Argument | Meaning |
+|---|---|
+| `Frame.new(t, data:)`, `Frame.new(t, path:)` | A frame's time in seconds (0 or more, larger than the frame before it) and its JPEG, PNG or WebP bytes; the media type comes from the bytes. |
+| `Frame.new(t, base64:, media_type:)` | The same from base64 text, sent as given, with its media type. |
+| `Video.new(id, frames:, fps: nil, start: nil, end: nil)` | Up to 4 videos a request. `id` is unique across the request's images and videos. `fps` caps the rate the API reads (above 0, at most 4); `start` and `end` choose the window on the frames' own times. Each is sent only when given. |
+
+Videos go with `decide`, `systemone`, the helpers, `decide_many` and batch requests; sessions take none. Frames are always sent inline as base64: they are never uploaded and never counted toward `inline_threshold`, and no frame is resized or re-encoded. A Hash in the API's wire form works wherever a `Video` or a `Frame` does.
+
+The SDK checks a video's form before sending, in the API's order and words: at most 4 videos, an id, ids unique across images and videos, a non-empty frame list, each frame's time a number of at least 0 and larger than the one before, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` at least 0, and `end` after `start`. A fault raises `BadRequestError` with `error_type` `api_usage_error`. How many frames a request may hold, a frame's bytes and size, and whether the window holds a frame are the API's to judge.
+
+To turn a video file into frames, use the `dn` command line: `dn truth "Does a person fall?" --video dock.mp4` samples the file on your machine and sends only the frames.
 
 ## Checked before sending
 
-The SDK checks every fixed rule the API documents before any network call, so the server never sees a request the client could have refused. A fault raises what the server would answer: the same class, the same `error_type`, the documented message, and for a 422 a `ValidationError` whose `entries` are the server's list. A local error has no `status` and no `request_id`. The checks run in the server's order: the nesting limit, the 422 entries, the first 400 in question order, then the images.
+The SDK checks every fixed rule the API documents before any network call, so the server never sees a request the client could have refused. A fault raises what the server would answer: the same class, the same `error_type`, the documented message, and for a 422 a `ValidationError` whose `entries` are the server's list. A local error has no `status` and no `request_id`. The checks run in the server's order: the nesting limit, the 422 entries, the first 400 in question order, then the images, then the videos.
 
 | Fault | Error | `error_type` |
 |---|---|---|
@@ -201,8 +232,9 @@ The SDK checks every fixed rule the API documents before any network call, so th
 | A question that is not a Hash or has no `type`; instructions, a state, an option description, a score level or a truth side that is not a String, Hash or Array; a choice or score without criteria, or with criteria of the wrong shape; a score with no levels | `ValidationError` with the server's `entries` | null |
 | A number grid: a bound that is not a finite number, beyond 2^53, `step` not above 0, more than 6 decimals in `min` or `step`, beyond the decimal bound, `min` above `max`, more than 4,096 values (counted in exact decimals) | `ValidationError` with the server's `entries` | null |
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions | `BadRequestError` with the API's documented message | null |
-| More than 4 images, an empty or repeated image id, bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
+| More than 16 images, an empty or repeated image id, bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
 | An `https` image URL over 2,048 characters, with user information, on a port other than 443, without a host, or naming a private or reserved address literally | `BadRequestError` | `image_url_refused` |
+| A video fault: see "Videos" | `BadRequestError` with the API's message | `api_usage_error` |
 | `open_session`: `window` outside 1 to 64, `ttl_seconds` outside 1 to 3,600 | `ValidationError` with the server's `entries` | null |
 | `Session#send`: see "Sessions" | `BadRequestError` | `api_usage_error` |
 | `batches.create` and `add`: a missing, empty, non-String or repeated `custom_id`, an add with no requests; `batches.list`: `offset` below 0, `limit` outside 1 to 100 | `BadRequestError` with the API's documented message | `api_usage_error` |
@@ -216,7 +248,7 @@ A bad argument raises Ruby's own `ArgumentError`, never a DecisionNode class: a 
 `check_request(method, request)` runs every check a call would run before sending, alone: it raises exactly what the call would raise (held `/v1/models` limits included) and returns `nil` when the request would be sent. It sends nothing and uploads nothing. `method` is `"decide"`, `"systemone"`, `"open_session"`, `"batches.create"` or `"batches.add"`; `request` holds the call's arguments, as a Hash or as keywords.
 
 ```ruby
-dn.check_request("decide", state: ticket, questions: questions, images: images) # => nil
+dn.check_request("decide", state: ticket, questions: questions, images: images, videos: videos) # => nil
 dn.check_request("open_session", questions: questions, window: 128)
 # raises DecisionNode::ValidationError, as open_session would
 dn.check_request("batches.create", requests: requests)
@@ -306,7 +338,7 @@ The calls one by one, on `dn.batches`:
 
 A `Batch` has every field of the batch object by name (`id`, `state`, `counters`, `created_at`, `finalized_at`, `expires_at`, `ended_at`, `results_url`, `results_expire_at`, `price_factor`, `usage`, `error`) and `ended?`. A `BatchResult` has `custom_id`, `status` (an Integer, or `"expired"` or `"cancelled"`), `headers`, `decision` (a `Decision` for a 200 line) and `error` (for an error line, the error `decide` would have raised, as a value).
 
-Every line carries `custom_id`, `model` (the request's, else the client's) and `state` (`""` when absent), and every line of a call is checked before anything is sent. Its images follow the threshold of "Images", per line. `get`, `list`, `results` and `cancel` are retried like every call. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout, a lost answer or a 5xx, since a repeat could make a second draft. A `finalize` answered with a 409 is resolved by reading the batch: if it is no longer a draft, the earlier finalize went through and the batch is returned.
+Every line carries `custom_id`, `model` (the request's, else the client's) and `state` (`""` when absent), and every line of a call is checked before anything is sent. Its images follow the threshold of "Images", per line, and its videos go inline with it. `get`, `list`, `results` and `cancel` are retried like every call. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout, a lost answer or a 5xx, since a repeat could make a second draft. A `finalize` answered with a 409 is resolved by reading the batch: if it is no longer a draft, the earlier finalize went through and the batch is returned.
 
 ## Safety
 
@@ -432,9 +464,9 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.6) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.7) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
-This gem implements version 1.1 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
+This gem implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 
 ## License
 

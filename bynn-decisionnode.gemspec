@@ -8,8 +8,8 @@ Gem::Specification.new do |spec|
   spec.authors = ["Bynn Intelligence, Inc."]
   spec.summary = "Ruby client for the DecisionNode API."
   spec.description = "A typed client for DecisionNode: ask truth, choice, score and number questions " \
-                     "about any state and get calibrated answers back, with image uploads, " \
-                     "sessions, the Batch API, retries, typed errors and the safety check result."
+                     "about any state, its images and its videos, and get calibrated answers " \
+                     "back, with image uploads, sessions, the Batch API, retries, typed errors and the safety check result."
   spec.homepage = "https://decisionnode.com"
   spec.license = "MIT"
   spec.metadata["source_code_uri"] = "https://github.com/Bynn-Intelligence/decision-node-ruby"

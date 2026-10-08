@@ -186,7 +186,8 @@ module Conformance
   end
 
   def norm_usage(usage)
-    usage && { "input_tokens" => usage.input_tokens, "output_tokens" => usage.output_tokens }
+    usage && { "input_tokens" => usage.input_tokens, "output_tokens" => usage.output_tokens,
+               "video_frames" => usage.video_frames, "video_seconds" => usage.video_seconds }
   end
 
   def norm_decision(decision)
@@ -197,6 +198,7 @@ module Conformance
       "usage" => norm_usage(decision.usage),
       "safety" => decision.safety&.to_h,
       "answers" => decision.answers.transform_values { |a| norm_answer(a) },
+      "warnings" => decision.warnings,
       "raw" => decision.raw
     }
   end
@@ -329,6 +331,8 @@ module Conformance
       when "$number"
         return DecisionNode.number(args["instructions"], min: args["min"], max: args["max"], step: args["step"])
       when "$image" then return image(args.transform_values { |v| decode(v, ctx) })
+      when "$video" then return video(args, ctx)
+      when "$frame" then return frame(args)
       end
     end
     case value
@@ -359,6 +363,22 @@ module Conformance
 
     # Without media_type the client is given the bytes alone and detects the format.
     DecisionNode::Image.new(id, data: image_bytes(args), media_type: type)
+  end
+
+  # Video(id, frames, fps, start, end): fps, start and end only when the case gives them.
+  def video(args, ctx)
+    kw = args.slice("fps", "start", "end").to_h { |k, v| [k.to_sym, v] }
+    DecisionNode::Video.new(args["id"], frames: args["frames"].map { |f| decode(f, ctx) }, **kw)
+  end
+
+  # Frame(t, data, media_type): path and data_base64 as raw bytes, data_text as base64 text.
+  def frame(args)
+    kw = args.key?("media_type") ? { media_type: args["media_type"] } : {}
+    if args.key?("data_text")
+      DecisionNode::Frame.new(args["t"], base64: args["data_text"], **kw)
+    else
+      DecisionNode::Frame.new(args["t"], data: image_bytes(args), **kw)
+    end
   end
 
   def resolve_ref(path, ctx)
@@ -506,18 +526,42 @@ module Conformance
       end
       j = i
       j += 1 while j < expected.size && expected[j]["parallel"]
-      # Requests sent in parallel may arrive in any order: one assignment must hold.
-      reasons = []
-      ok = (i...j).to_a.permutation.any? do |perm|
-        (i...j).zip(perm).each { |k, g| check_request!(expected[k], log[g], "requests[#{k}]") }
-        true
-      rescue Fail => e
-        reasons << e.message
-        false
+      # Requests sent in parallel may arrive in any order: each entry is
+      # matched to a recorded request not yet taken, backtracking when a later
+      # entry finds none.
+      fits = (i...j).to_h do |k|
+        [k, (i...j).select do |g|
+          check_request!(expected[k], log[g], "requests[#{k}]")
+          true
+        rescue Fail
+          false
+        end]
       end
-      raise Fail, "no order of the parallel requests matches: #{reasons.first}" unless ok
+      unless assign((i...j).to_a, fits, {})
+        bad = fits.find { |_, gs| gs.empty? }&.first || i
+        reason = begin
+          check_request!(expected[bad], log[bad], "requests[#{bad}]")
+          "no assignment of the parallel requests matches"
+        rescue Fail => e
+          e.message
+        end
+        raise Fail, "no order of the parallel requests matches: #{reason}"
+      end
 
       i = j
+    end
+  end
+
+  # Gives each entry one of the requests it fits, none taken twice.
+  def assign(entries, fits, taken)
+    return true if entries.empty?
+
+    first, *rest = entries
+    fits[first].any? do |g|
+      next false if taken.key?(g)
+
+      taken[g] = true
+      assign(rest, fits, taken) || (taken.delete(g) && false)
     end
   end
 

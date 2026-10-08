@@ -69,9 +69,14 @@ class ImageTest < Minitest::Test
   def test_request_level_image_checks
     png = DecisionNode::Image.new("a", data: fixture("image.png"))
     error = assert_raises(DecisionNode::BadRequestError) do
-      DecisionNode::Checks.images!(Array.new(5) { |i| DecisionNode::Image.new("i#{i}", data: fixture("image.png")) })
+      DecisionNode::Checks.images!(Array.new(17) { |i| DecisionNode::Image.new("i#{i}", data: fixture("image.png")) })
     end
-    assert_match(/at most 4 images/, error.message)
+    assert_equal "Too many images: 17, the limit is 16.", error.message
+    assert_nil DecisionNode::Checks.images!(Array.new(16) { |i| DecisionNode::Image.new("i#{i}", data: fixture("image.png")) })
+    held = assert_raises(DecisionNode::BadRequestError) do
+      DecisionNode::Checks.images!([png, DecisionNode::Image.new("b", data: fixture("image.png"))], limits: { "images" => { "max_images" => 1 } })
+    end
+    assert_equal "Too many images: 2, the limit is 1.", held.message
     assert_raises(DecisionNode::BadRequestError) do
       DecisionNode::Checks.images!([png, DecisionNode::Image.new("a", url: "https://example.com/a.png")])
     end
