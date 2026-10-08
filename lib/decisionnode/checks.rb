@@ -62,7 +62,7 @@ class DecisionNode
     # line. A point or box question is checked against the ids of the body's
     # `images`; a session's images come with its frames, so there they are
     # the server's to judge.
-    def request!(body, profile: :decide, limits: {}, entries: [])
+    def request!(body, profile: :decide, limits: {}, entries: [], counts: [])
       nesting!(body)
       entries = entries.dup
       deferred = []
@@ -70,6 +70,7 @@ class DecisionNode
       entries.concat(sdl_entries(%w[body state], state)) unless state.nil? || sdl?(state)
       image_ids = profile == :session ? nil : Array(body["images"]).map { |img| img.is_a?(Hash) ? img["id"] || img[:id] : nil }
       (body["questions"] || {}).each { |id, q| question(id, q, entries, deferred, profile, limits, image_ids) }
+      entries.concat(counts)
       raise invalid(entries) unless entries.empty?
       raise deferred.first unless deferred.empty?
 
@@ -109,14 +110,37 @@ class DecisionNode
 
     # ---- images
 
-    # Checks a request's images: the count, ids, URLs, upload references and
-    # each local image's bytes.
+    # The 422 entries of a request with more images or videos than the API
+    # takes, images first: `too_long` on the list, whose `input` is the list
+    # in its wire form (a local image without its bytes). They join the
+    # request's other 422 entries, after the state's and the questions'.
+    def count_entries(images, videos, limits: {})
+      out = []
+      most = held(limits, "max_images") || MAX_IMAGES
+      out << too_long("images", images.map { |img| image_listed(img) }, most) if images.size > most
+      out << too_long("videos", videos.map { |v| v.is_a?(Video) ? v.to_h : v }, MAX_VIDEOS) if videos.size > MAX_VIDEOS
+      out
+    end
+
+    def too_long(name, input, most)
+      entry("too_long", ["body", name], "List should have at most #{most} items after validation, not #{input.size}", input,
+            { "field_type" => "List", "max_length" => most, "actual_length" => input.size })
+    end
+
+    # An image as a count entry lists it: a local image by its id and media
+    # type, its bytes left out.
+    def image_listed(img)
+      return img unless img.is_a?(Image)
+
+      img.local? ? { "id" => img.id, "media_type" => img.media_type } : img.to_h
+    end
+
+    # Checks a request's images, once their count is known to be within the
+    # limit: ids, URLs, upload references and each local image's bytes.
     def images!(images, limits: {})
       return nil if images.nil? || images.empty?
 
-      most = held(limits, "max_images") || MAX_IMAGES
       biggest = held(limits, "max_image_bytes") || Image::MAX_BYTES
-      usage("Too many images: #{images.size}, the limit is #{most}.") if images.size > most
       seen = {}
       images.each_with_index do |img, i|
         id = img.is_a?(Image) ? img.id : (img["id"] || img[:id])
@@ -205,8 +229,9 @@ class DecisionNode
 
     # ---- videos
 
-    # Checks a request's videos in the API's order, after its images: the
-    # count, then each video's id (unique across images and videos), its
+    # Checks a request's videos in the API's order, after its images, once
+    # their count is known to be within the limit: each video's id (unique
+    # across images and videos), its
     # frames (each time a number of at least 0, larger than the one before,
     # and a JPEG, PNG or WebP media type), `fps`, `start` and `end`. The
     # frame counts, a frame's bytes and the window holding a frame are the
@@ -214,7 +239,6 @@ class DecisionNode
     def videos!(videos, image_ids: [])
       return nil if videos.nil? || videos.empty?
 
-      usage("Too many videos: #{videos.size}, the limit is #{MAX_VIDEOS}.") if videos.size > MAX_VIDEOS
       seen = image_ids.to_h { |id| [id, true] }
       videos.each_with_index do |video, i|
         id = video_field(video, "id")

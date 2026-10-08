@@ -68,15 +68,17 @@ class ImageTest < Minitest::Test
 
   def test_request_level_image_checks
     png = DecisionNode::Image.new("a", data: fixture("image.png"))
-    error = assert_raises(DecisionNode::BadRequestError) do
-      DecisionNode::Checks.images!(Array.new(17) { |i| DecisionNode::Image.new("i#{i}", data: fixture("image.png")) })
-    end
-    assert_equal "Too many images: 17, the limit is 16.", error.message
-    assert_nil DecisionNode::Checks.images!(Array.new(16) { |i| DecisionNode::Image.new("i#{i}", data: fixture("image.png")) })
-    held = assert_raises(DecisionNode::BadRequestError) do
-      DecisionNode::Checks.images!([png, DecisionNode::Image.new("b", data: fixture("image.png"))], limits: { "images" => { "max_images" => 1 } })
-    end
-    assert_equal "Too many images: 2, the limit is 1.", held.message
+    seventeen = Array.new(16) { |i| DecisionNode::Image.new("i#{i}", data: fixture("image.png")) } +
+                [DecisionNode::Image.new("u", url: "https://example.com/u.png")]
+    entry = DecisionNode::Checks.count_entries(seventeen, []).first
+    assert_equal({ "type" => "too_long", "loc" => %w[body images], "msg" => "List should have at most 16 items after validation, not 17",
+                   "ctx" => { "field_type" => "List", "max_length" => 16, "actual_length" => 17 } }, entry.except("input"))
+    assert_equal({ "id" => "i0", "media_type" => "image/png" }, entry["input"].first)
+    assert_equal({ "id" => "u", "url" => "https://example.com/u.png" }, entry["input"].last)
+    assert_empty DecisionNode::Checks.count_entries(seventeen.first(16), [])
+    held = DecisionNode::Checks.count_entries([png, DecisionNode::Image.new("b", data: fixture("image.png"))], [],
+                                              limits: { "images" => { "max_images" => 1 } })
+    assert_equal "List should have at most 1 items after validation, not 2", held.first["msg"]
     assert_raises(DecisionNode::BadRequestError) do
       DecisionNode::Checks.images!([png, DecisionNode::Image.new("a", url: "https://example.com/a.png")])
     end

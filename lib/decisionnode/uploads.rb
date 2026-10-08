@@ -71,9 +71,10 @@ class DecisionNode
     # image (from the cache when the same bytes were uploaded before). URL
     # images and upload ids cannot be uploaded and raise ArgumentError.
     #
-    # Sends one `POST /v1/uploads` for up to 16 images not in the cache, then
-    # one `PUT` per image, in parallel. An id names the upload for an hour, in
-    # any image slot: `Image.new("receipt", upload_id: id)`.
+    # Sends one `POST /v1/uploads` for the images not in the cache, then one
+    # `PUT` per image, in parallel. A call takes 1 to 16 images; more raise
+    # the API's BadRequestError before anything is sent. An id names the
+    # upload for an hour, in any image slot: `Image.new("receipt", upload_id: id)`.
     def upload(images)
       raise ArgumentError, "images must be an Array of DecisionNode::Image" unless images.is_a?(Array)
 
@@ -82,14 +83,15 @@ class DecisionNode
 
         raise ArgumentError, "upload takes images made from a path, bytes, base64 or an IO"
       end
+      if images.size > Checks::MAX_IMAGES
+        raise BadRequestError.new("files: 1 to #{Checks::MAX_IMAGES} files, got #{images.size}.", error_type: "api_usage_error")
+      end
+
       Checks.images!(images, limits: limits_for(nil))
       ids = images.map { |img| @uploads.get(cache_key(img)) }
       missing = images.each_index.reject { |i| ids[i] }
-      # One presign takes up to 16 files.
-      missing.each_slice(Checks::MAX_IMAGES) do |slice|
-        fresh = upload_images(slice.map { |i| images[i] })
-        slice.each_with_index { |i, j| ids[i] = fresh[j] }
-      end
+      fresh = missing.empty? ? [] : upload_images(missing.map { |i| images[i] })
+      missing.each_with_index { |i, j| ids[i] = fresh[j] }
       ids
     end
 

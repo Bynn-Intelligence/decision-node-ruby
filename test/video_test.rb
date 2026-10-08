@@ -84,8 +84,12 @@ class VideoTest < Minitest::Test
 
   def test_local_checks_in_the_api_order_and_words
     five = Array.new(5) { |i| DecisionNode::Video.new("v#{i}", frames: frames(0)) }
-    assert_equal "Too many videos: 5, the limit is 4.",
-                 refused { |dn| dn.decide(questions: { "q" => DecisionNode.truth("?") }, videos: five) }
+    too_many = assert_raises(DecisionNode::ValidationError) do
+      client(FakeHTTP.new(FakeHTTP.json(200, truth_body))).decide(questions: { "q" => DecisionNode.truth("?") }, videos: five)
+    end
+    assert_equal [["too_long", %w[body videos], 4, 5]],
+                 too_many.entries.map { |e| [e["type"], e["loc"], e["ctx"]["max_length"], e["input"].size] }
+    assert_equal five.first.to_h, too_many.entries.first["input"].first
     assert_equal "Video 0 needs an id.", refused { |dn| decide_video(dn, DecisionNode::Video.new("", frames: frames(0))) }
     shared = refused do |dn|
       dn.decide(questions: { "q" => DecisionNode.truth("?") }, images: [DecisionNode::Image.new("gate", url: "https://example.com/g.jpg")],

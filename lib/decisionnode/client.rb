@@ -509,14 +509,14 @@ class DecisionNode
   end
 
   # Every fixed rule of a request before it is sent: the body (its images and
-  # videos as placeholders, so the nesting counts them), then the images,
-  # then the videos.
+  # videos as placeholders, so the nesting counts them) with the counts of
+  # its images and videos, then the images, then the videos.
   def check_body(body, images, videos = [], profile: :decide)
     probe = body
     probe = probe.merge("images" => images.map { |img| { "id" => image_id(img) } }) unless images.empty?
     probe = probe.merge("videos" => Array.new(videos.size) { { "id" => "", "frames" => [{}] } }) unless videos.empty?
     limits = limits_for(body["model"])
-    Checks.request!(probe, profile: profile, limits: limits)
+    Checks.request!(probe, profile: profile, limits: limits, counts: Checks.count_entries(images, videos, limits: limits))
     Checks.images!(images, limits: limits)
     Checks.videos!(videos, image_ids: images.map { |img| image_id(img) })
   end

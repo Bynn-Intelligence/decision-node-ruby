@@ -12,15 +12,16 @@ Implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERS
 
 - Videos sent as frames: `DecisionNode::Video.new(id, frames:, fps:, start:, end:)` and `DecisionNode::VideoFrame.new(t, data:)`, `VideoFrame.new(t, path:)` or `VideoFrame.new(t, base64:, media_type:)`. A frame's media type comes from its bytes when none is given. `fps`, `start` and `end` are sent only when given. A Hash in the API's wire form is accepted wherever a `Video` or a `VideoFrame` is.
 - `videos:` on `decide`, `systemone`, `check`, `classify`, `score`, `number`, `gate`, `decide_many`, batch requests and `check_request`. Frames are always sent inline as base64: never uploaded, never cached and never counted toward `inline_threshold`. Sessions take no videos.
-- The API's video form rules checked before sending, in its order and words, as `BadRequestError` with `error_type` `api_usage_error`: at most 4 videos, an id, ids unique across images and videos, a non-empty frame list, frame times of at least 0 and increasing, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` at least 0, and `end` after `start`. Frame counts, a frame's bytes and the window are left to the API.
+- The API's video form rules checked before sending, in its order and words, as `BadRequestError` with `error_type` `api_usage_error`: an id, ids unique across images and videos, a non-empty frame list, frame times of at least 0 and increasing, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` at least 0, and `end` after `start`. Frame counts, a frame's bytes and the window are left to the API.
 - Point and box questions: `DecisionNode.point(instructions, image:, units:)` and `DecisionNode.box(...)`, answered as `PointAnswer` (`x`, `y`) and `BoxAnswer` (`x1`, `y1`, `x2`, `y2`), each with `present`, `confidence`, `image`, `width` and `height` as sent; an answer with a field missing or of the wrong type is an `UnknownAnswer`. They go with `decide`, `decide_many`, batch requests and `check_request`; `systemone` refuses them as an unknown type. Checked before sending as the API would: a request without an image, a missing or unknown `image`, and `units` other than `pixels` and `normalized` raise a `ValidationError` with the server's entries, and a question without instructions a `BadRequestError`.
 - `Decision#usage.video_frames` and `usage.video_seconds` (nil when the response has none) and `Decision#warnings` (each sentence as sent, an empty Array when none), also on batch results.
 
 ### Changed
 
-- Up to 16 images a request (4 before), checked before sending; the 17th raises `BadRequestError` with the API's message, `Too many images: 17, the limit is 16.` A lower limit held from `models` (on the entry or in its `images` object) is checked the same way.
+- Up to 16 images a request (4 before) and up to 4 videos, checked before sending: more raise the API's `ValidationError` with a `too_long` entry on `images` or `videos` (`ctx.max_length` 16 or 4), listed with the request's other 422 entries after the state's and the questions'. Its `input` is the list in its wire form, a local image as its id and media type without its bytes. A lower image limit held from `models` (on the entry, else in its `images` object) is checked the same way.
+- `upload` takes 1 to 16 images a call; more raise the API's `BadRequestError` (`api_usage_error`) before anything is sent.
 - One `POST /v1/uploads` takes up to 16 files.
-- The conformance tests run suite 1.8.
+- The conformance tests run suite 1.9.
 
 ## [0.1.0] - Unreleased
 
