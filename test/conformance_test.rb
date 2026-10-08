@@ -260,34 +260,50 @@ module Conformance
     match!(spec["fields"] || {}, norm_error(err), "#{path}.fields")
   end
 
+  # batch_results whole, or count with batch_results_sample by index.
+  def check_results_spec!(spec, results, path)
+    results = results.to_a
+    check_batch_results!(spec["batch_results"], results, "#{path}.batch_results") if spec.key?("batch_results")
+    if spec.key?("count") && results.size != spec["count"]
+      raise Fail, "#{path}: expected #{spec['count']} results, got #{results.size}"
+    end
+    (spec["batch_results_sample"] || []).each do |sample|
+      i = sample["index"]
+      raise Fail, "#{path}: no result #{i} of #{results.size}" if i >= results.size
+
+      check_batch_result!(sample.except("index"), results[i], "#{path}.batch_results[#{i}]")
+    end
+  end
+
   def check_batch_results!(expected, results, path)
     results = results.to_a
     raise Fail, "#{path}: expected #{expected.size} results, got #{results.size}" unless results.size == expected.size
 
-    expected.zip(results).each_with_index do |(spec, res), i|
-      got = norm_batch_result(res)
-      where = "#{path}[#{i}]"
-      %w[custom_id status headers].each do |key|
-        next unless spec.key?(key)
+    expected.zip(results).each_with_index { |(spec, res), i| check_batch_result!(spec, res, "#{path}[#{i}]") }
+  end
 
-        if key == "headers"
-          match!(spec[key], got[key], "#{where}.headers")
-        elsif !same?(spec[key], got[key])
-          raise Fail, "#{where}.#{key}: expected #{short(spec[key])}, got #{short(got[key])}"
-        end
-      end
-      if spec.key?("decision")
-        raise Fail, "#{where}: expected a decision, got none" unless got.key?("decision")
+  def check_batch_result!(spec, res, where)
+    got = norm_batch_result(res)
+    %w[custom_id status headers].each do |key|
+      next unless spec.key?(key)
 
-        match!(spec["decision"], got["decision"], "#{where}.decision")
+      if key == "headers"
+        match!(spec[key], got[key], "#{where}.headers")
+      elsif !same?(spec[key], got[key])
+        raise Fail, "#{where}.#{key}: expected #{short(spec[key])}, got #{short(got[key])}"
       end
-      if spec.key?("error")
-        raise Fail, "#{where}: expected an error value, got none" unless got.key?("error")
-
-        check_error!(spec["error"], got["error"], "#{where}.error")
-      end
-      raise Fail, "#{where}: expected no decision" if spec["no_decision"] && got.key?("decision")
     end
+    if spec.key?("decision")
+      raise Fail, "#{where}: expected a decision, got none" unless got.key?("decision")
+
+      match!(spec["decision"], got["decision"], "#{where}.decision")
+    end
+    if spec.key?("error")
+      raise Fail, "#{where}: expected an error value, got none" unless got.key?("error")
+
+      check_error!(spec["error"], got["error"], "#{where}.error")
+    end
+    raise Fail, "#{where}: expected no decision" if spec["no_decision"] && got.key?("decision")
   end
 
   # ---- calls
@@ -305,6 +321,7 @@ module Conformance
       case key
       when "$ref" then return resolve_ref(args, ctx)
       when "$text" then return args["repeat"] * args["times"]
+      when "$list" then return Array.new(args["count"]) { |i| decode(with_index(args["item"], i), ctx) }
       when "$nest" then return args["depth"].times.reduce(decode(args["value"], ctx)) { |inner, _| [inner] }
       when "$truth" then return DecisionNode.truth(args["instructions"], if_true: args["true"], if_false: args["false"])
       when "$choice" then return DecisionNode.choice(args["instructions"], args["options"])
@@ -317,6 +334,16 @@ module Conformance
     case value
     when Hash then value.transform_values { |v| decode(v, ctx) }
     when Array then value.map { |v| decode(v, ctx) }
+    else value
+    end
+  end
+
+  # A value with "{i}" in every string replaced by the index.
+  def with_index(value, index)
+    case value
+    when String then value.gsub("{i}", index.to_s)
+    when Hash then value.transform_values { |v| with_index(v, index) }
+    when Array then value.map { |v| with_index(v, index) }
     else value
     end
   end
@@ -355,6 +382,11 @@ module Conformance
     return client.decide_raw(raw_args["body"]) if method == "decide_raw"
 
     args = raw_args.transform_values { |v| decode(v, ctx) }
+    if call["check"]
+      # The same request handed to the SDK's check instead of being sent.
+      return client.check_request(method, kwargs(args.except("batch_id")))
+    end
+
     case method
     when "models" then client.models
     when "upload" then client.upload(args["images"])
@@ -428,7 +460,7 @@ module Conformance
     (case_["env"] || {}).each { |k, v| ENV[k] = fill(v) }
     spec = case_["client"] || {}
     kw = {}
-    %w[api_key model timeout max_retries inline_threshold].each { |k| kw[k.to_sym] = spec[k] unless spec[k].nil? }
+    %w[api_key model timeout max_retries inline_threshold upload_timeout].each { |k| kw[k.to_sym] = spec[k] unless spec[k].nil? }
     if spec.key?("base_url")
       kw[:base_url] = fill(spec["base_url"]) unless spec["base_url"].nil?
     else
@@ -683,11 +715,13 @@ module Conformance
 
       match!(spec.fetch("batch", {}), result.to_h, "#{path}.batch")
     when "batch_page" then match!(spec.fetch("batch_page", {}), result.to_h, "#{path}.batch_page")
-    when "batch_results" then check_batch_results!(spec["batch_results"], result, "#{path}.batch_results")
+    when "batch_results" then check_results_spec!(spec, result, path)
     when "batch_run"
       batch, results = result
       match!(spec.fetch("batch", {}), batch.to_h, "#{path}.batch")
-      check_batch_results!(spec["batch_results"], results, "#{path}.batch_results") if spec.key?("batch_results")
+      check_results_spec!(spec, results, path)
+    when "checked"
+      raise Fail, "#{path}: the check returned #{result.inspect}; a request that passes returns nil" unless result.nil?
     when "session"
       raise Fail, "#{path}: expected a Session, got #{result.class}" unless result.is_a?(DecisionNode::Session)
 
@@ -743,15 +777,20 @@ module Conformance
       elsif step.key?("send")
         args = step["send"].dup
         name = args.delete("session")
+        frame = kwargs(args.transform_values { |v| decode(v, ctx) })
         begin
-          ctx.fetch(name).send(**kwargs(args.transform_values { |v| decode(v, ctx) }))
+          result = step["check"] ? ctx.fetch(name).check_frame(**frame) : ctx.fetch(name).send(**frame)
         rescue DecisionNode::DecisionNodeError, ArgumentError => e
           # A frame that breaks a fixed rule is refused locally and nothing is sent.
           raise unless step.key?("outcome")
 
           check_outcome!(step["outcome"], e, "#{where}.outcome")
         else
-          raise Fail, "#{where}: expected #{step['outcome']['error'] || step['outcome']}, the frame was sent" if step.key?("outcome")
+          if step["check"] && step.key?("outcome")
+            check_outcome!(step["outcome"], result, "#{where}.outcome")
+          elsif step.key?("outcome")
+            raise Fail, "#{where}: expected #{step['outcome']['error'] || step['outcome']}, the frame was sent"
+          end
         end
       elsif step.key?("read")
         read_events(step["read"], ctx, events, where)
