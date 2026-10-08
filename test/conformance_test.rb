@@ -164,8 +164,14 @@ module Conformance
 
   # ---- normalisation into the neutral shapes the cases use
 
+  PLACE_FIELDS = %w[present confidence image width height].freeze
+
   def norm_answer(answer)
     case answer
+    when DecisionNode::PointAnswer
+      %w[x y].concat(PLACE_FIELDS).to_h { |k| [k, answer.public_send(k)] }.merge("kind" => "point")
+    when DecisionNode::BoxAnswer
+      %w[x1 y1 x2 y2].concat(PLACE_FIELDS).to_h { |k| [k, answer.public_send(k)] }.merge("kind" => "box")
     when DecisionNode::NumberAnswer
       { "kind" => "number", "number" => answer.number, "expected" => answer.expected,
         "confidence" => answer.confidence, "probabilities" => answer.probabilities }
@@ -330,6 +336,8 @@ module Conformance
       when "$score" then return DecisionNode.score(args["instructions"], args["levels"])
       when "$number"
         return DecisionNode.number(args["instructions"], min: args["min"], max: args["max"], step: args["step"])
+      when "$point" then return DecisionNode.point(args["instructions"], image: args["image"], units: args["units"])
+      when "$box" then return DecisionNode.box(args["instructions"], image: args["image"], units: args["units"])
       when "$image" then return image(args.transform_values { |v| decode(v, ctx) })
       when "$video" then return video(args, ctx)
       when "$frame" then return frame(args)
@@ -371,13 +379,13 @@ module Conformance
     DecisionNode::Video.new(args["id"], frames: args["frames"].map { |f| decode(f, ctx) }, **kw)
   end
 
-  # Frame(t, data, media_type): path and data_base64 as raw bytes, data_text as base64 text.
+  # VideoFrame(t, data, media_type): path and data_base64 as raw bytes, data_text as base64 text.
   def frame(args)
     kw = args.key?("media_type") ? { media_type: args["media_type"] } : {}
     if args.key?("data_text")
-      DecisionNode::Frame.new(args["t"], base64: args["data_text"], **kw)
+      DecisionNode::VideoFrame.new(args["t"], base64: args["data_text"], **kw)
     else
-      DecisionNode::Frame.new(args["t"], data: image_bytes(args), **kw)
+      DecisionNode::VideoFrame.new(args["t"], data: image_bytes(args), **kw)
     end
   end
 

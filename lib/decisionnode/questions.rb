@@ -65,6 +65,33 @@ class DecisionNode
       question["step"] = step unless step.nil?
       question
     end
+
+    # One spot in an image, answered with its `x` and `y`. `image` is the id
+    # of the image to look in, needed when the request has two or more;
+    # `units` is "pixels" (the API's default) or "normalized". Each is left
+    # out of the wire form when not given.
+    #
+    #   point("Point to the yellow package closest to the robot arm.")
+    def point(instructions = nil, image: nil, units: nil)
+      place("point", instructions, image, units)
+    end
+
+    # A rectangle in an image, answered with its top-left (`x1`, `y1`) and
+    # bottom-right (`x2`, `y2`) corners. `image` and `units` as for #point.
+    #
+    #   box("Draw a box around the damaged package.", image: "belt")
+    def box(instructions = nil, image: nil, units: nil)
+      place("box", instructions, image, units)
+    end
+
+    def place(type, instructions, image, units)
+      question = { "type" => type }
+      question["instructions"] = instructions unless instructions.nil?
+      question["image"] = image unless image.nil?
+      question["units"] = units unless units.nil?
+      question
+    end
+    private_class_method :place
   end
 
   class << self
@@ -86,6 +113,16 @@ class DecisionNode
     # See Questions.number.
     def number(instructions = nil, min: nil, max: nil, step: nil)
       Questions.number(instructions, min: min, max: max, step: step)
+    end
+
+    # See Questions.point.
+    def point(instructions = nil, image: nil, units: nil)
+      Questions.point(instructions, image: image, units: units)
+    end
+
+    # See Questions.box.
+    def box(instructions = nil, image: nil, units: nil)
+      Questions.box(instructions, image: image, units: units)
     end
   end
 end

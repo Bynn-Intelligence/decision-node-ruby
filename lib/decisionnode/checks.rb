@@ -32,6 +32,7 @@ class DecisionNode
     LIST_LIMIT_MAX = 100
     CUSTOM_ID_CHARS = 512
     MEDIA_TYPES = %w[image/jpeg image/png image/webp].freeze
+    UNITS = %w[pixels normalized].freeze
     GRID_DEFAULTS = { "min" => 0, "max" => 255, "step" => 1 }.freeze
 
     # Literal addresses an image URL may not name (IPv4-mapped and NAT64
@@ -47,7 +48,7 @@ class DecisionNode
     module_function
 
     def decide_types
-      ["truth", TruthAnswer::STRICT_TYPE, "choice", "score", "number"]
+      ["truth", TruthAnswer::STRICT_TYPE, "choice", "score", "number", "point", "box"]
     end
 
     def systemone_types
@@ -57,14 +58,18 @@ class DecisionNode
     # ---- requests
 
     # Checks a request body (String keys) for `/v1/decide` (profile :decide),
-    # `/v1/systemone` (:systemone), a session or a batch line.
+    # `/v1/systemone` (:systemone), a session's opening (:session) or a batch
+    # line. A point or box question is checked against the ids of the body's
+    # `images`; a session's images come with its frames, so there they are
+    # the server's to judge.
     def request!(body, profile: :decide, limits: {}, entries: [])
       nesting!(body)
       entries = entries.dup
       deferred = []
       state = body["state"]
       entries.concat(sdl_entries(%w[body state], state)) unless state.nil? || sdl?(state)
-      (body["questions"] || {}).each { |id, q| question(id, q, entries, deferred, profile, limits) }
+      image_ids = profile == :session ? nil : Array(body["images"]).map { |img| img.is_a?(Hash) ? img["id"] || img[:id] : nil }
+      (body["questions"] || {}).each { |id, q| question(id, q, entries, deferred, profile, limits, image_ids) }
       raise invalid(entries) unless entries.empty?
       raise deferred.first unless deferred.empty?
 
@@ -227,12 +232,12 @@ class DecisionNode
       video_usage(id, "frames must be a non-empty list of frames") unless frames.is_a?(Array) && !frames.empty?
       before = nil
       frames.each_with_index do |frame, n|
-        video_usage(id, "frame #{n} must be an object with t, media_type and data") unless frame.is_a?(Frame) || frame.is_a?(Hash)
+        video_usage(id, "frame #{n} must be an object with t, media_type and data") unless frame.is_a?(VideoFrame) || frame.is_a?(Hash)
         t = video_field(frame, "t")
         video_usage(id, "frame #{n}: t must be a number of seconds, at least 0") unless seconds?(t) && t >= 0
         video_usage(id, "frame #{n}: t must be larger than the frame before it (#{g(before)})") if before && t <= before
         before = t
-        video_usage(id, "frame #{n}: data must be base64 text") unless frame.is_a?(Frame) || video_field(frame, "data").is_a?(String)
+        video_usage(id, "frame #{n}: data must be base64 text") unless frame.is_a?(VideoFrame) || video_field(frame, "data").is_a?(String)
         unless MEDIA_TYPES.include?(video_field(frame, "media_type"))
           video_usage(id, "frame #{n}: media_type must be one of #{MEDIA_TYPES.join(', ')}")
         end
@@ -247,10 +252,10 @@ class DecisionNode
       video_usage(id, "end must be after start") if !last.nil? && last <= (video_field(video, "start") || 0)
     end
 
-    # A field of a Video or Frame, or of its wire-form Hash (String or Symbol keys).
+    # A field of a Video or VideoFrame, or of its wire-form Hash (String or Symbol keys).
     def video_field(item, name)
       case item
-      when Video, Frame then item.public_send(name)
+      when Video, VideoFrame then item.public_send(name)
       when Hash then item.key?(name) ? item[name] : item[name.to_sym]
       end
     end
@@ -299,7 +304,7 @@ class DecisionNode
         fault = bounded_int(name, body[name], most)
         entries << fault if fault
       end
-      request!({ "questions" => body["questions"] }, limits: limits, entries: entries)
+      request!({ "questions" => body["questions"] }, profile: :session, limits: limits, entries: entries)
       usage("Model #{limits['model']} does not serve sessions.") if sessions["enabled"] == false
       nil
     end
@@ -386,7 +391,7 @@ class DecisionNode
 
     # ---- questions
 
-    def question(id, q, entries, deferred, profile, limits)
+    def question(id, q, entries, deferred, profile, limits, image_ids)
       base = ["body", "questions", id]
       unless q.is_a?(Hash)
         entries << entry("model_type", base, "Input should be a valid dictionary or object", q)
@@ -409,8 +414,34 @@ class DecisionNode
       when "number" then number(id, q, loc, entries, deferred, limits)
       when "choice" then choice(id, q, loc, entries, deferred, limits)
       when "score" then score(q, loc, entries, deferred, profile, limits)
+      when "point", "box" then place(id, q, loc, entries, deferred, image_ids)
       else truth(id, q, loc, entries, deferred)
       end
+    end
+
+    # A point or box question: the image it looks in, its units, and its
+    # instructions. `image_ids` are the request's image ids, nil when the
+    # images are not known here.
+    def place(id, q, loc, entries, deferred, image_ids)
+      image = q["image"]
+      unless image_ids.nil?
+        if image_ids.empty?
+          entries << entry("image_required", loc, "A #{q['type']} question needs an image in the request", q)
+        elsif image.nil?
+          entries << entry("missing", loc + ["image"], "Field required", q) if image_ids.size >= 2
+        elsif !image.is_a?(String)
+          entries << entry("string_type", loc + ["image"], "Input should be a valid string", image)
+        elsif !image_ids.include?(image)
+          entries << entry("unknown_image", loc + ["image"], "Input should be the id of an image of the request", image)
+        end
+      end
+      units = q["units"]
+      unless units.nil? || UNITS.include?(units)
+        entries << entry("literal_error", loc + ["units"], "Input should be 'pixels' or 'normalized'", units,
+                         { "expected" => "'pixels' or 'normalized'" })
+      end
+      instructions = q["instructions"]
+      deferred << plain("#{q['type'].capitalize} question must have instructions: #{id}") if instructions.nil? || instructions == ""
     end
 
     def choice(id, q, loc, entries, deferred, limits)

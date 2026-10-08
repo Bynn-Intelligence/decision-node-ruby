@@ -119,7 +119,7 @@ class DecisionNode
   # questions:: question id to question (a builder's result or a wire-form Hash).
   # images::    an Array of Image (or wire-form Hashes), up to 16.
   # videos::    an Array of Video (or wire-form Hashes), up to 4, each sent as
-  #             its frames; available when the API enables video.
+  #             its frames.
   # model::     overrides the client's model for this call (nil or "" uses the client's).
   #
   # The request is checked before anything is sent: a fault the API would
@@ -513,12 +513,16 @@ class DecisionNode
   # then the videos.
   def check_body(body, images, videos = [], profile: :decide)
     probe = body
-    probe = probe.merge("images" => Array.new(images.size) { { "id" => "" } }) unless images.empty?
+    probe = probe.merge("images" => images.map { |img| { "id" => image_id(img) } }) unless images.empty?
     probe = probe.merge("videos" => Array.new(videos.size) { { "id" => "", "frames" => [{}] } }) unless videos.empty?
     limits = limits_for(body["model"])
     Checks.request!(probe, profile: profile, limits: limits)
     Checks.images!(images, limits: limits)
-    Checks.videos!(videos, image_ids: images.map { |img| img.is_a?(Image) ? img.id : (img["id"] || img[:id]) })
+    Checks.videos!(videos, image_ids: images.map { |img| image_id(img) })
+  end
+
+  def image_id(img)
+    img.is_a?(Image) ? img.id : img["id"] || img[:id]
   end
 
   # The image list as given: an Array of Image or wire-form Hashes.

@@ -48,7 +48,7 @@ The values you read are the values the API sent: nothing is rounded, renormalise
 
 ## Questions
 
-Four builders return a question's wire form as a plain Hash:
+Six builders return a question's wire form as a plain Hash:
 
 | Builder | Asks for |
 |---|---|
@@ -56,8 +56,10 @@ Four builders return a question's wire form as a plain Hash:
 | `DecisionNode.choice(instructions, options)` | One option of a set. `options` is a Hash of name to description, or an Array of names. |
 | `DecisionNode.score(instructions, levels)` | A place on an ordered scale. `levels` is an Array, listed from low to high. |
 | `DecisionNode.number(instructions, min: nil, max: nil, step: nil)` | A value on a grid from `min` to `max` in steps of `step`. A bound left out is left out of the request, so the server's defaults apply: 0, 255 and 1. |
+| `DecisionNode.point(instructions, image: nil, units: nil)` | One spot in an image (see "Points and boxes"). |
+| `DecisionNode.box(instructions, image: nil, units: nil)` | A rectangle in an image (see "Points and boxes"). |
 
-`include DecisionNode::Questions` makes them available as `truth(...)`, `choice(...)`, `score(...)` and `number(...)`.
+`include DecisionNode::Questions` makes them available as `truth(...)`, `choice(...)`, `score(...)`, `number(...)`, `point(...)` and `box(...)`.
 
 `state`, instructions, descriptions and levels take a String or any JSON value. A question Hash copied from the API documentation works wherever a builder does:
 
@@ -157,6 +159,8 @@ end
 | `ChoiceAnswer` | `choice`, `confidence`, `probabilities` (by option name, exactly as sent) |
 | `ScoreAnswer` | `score`, `confidence`, `probabilities` (by level index, an Integer), `legend` (level index to the level as sent) |
 | `NumberAnswer` | `number` (the most probable value of the grid), `expected` (the probability-weighted mean), `confidence` (the probability of `number`), `probabilities` (by the value exactly as the server wrote it, `"7"`, `"3.5"`) |
+| `PointAnswer` | `x`, `y`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
+| `BoxAnswer` | `x1`, `y1`, `x2`, `y2`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
 | `ModelInfo` | `name`, `description`, `release_date`, `limits` (every other field of the entry), and `sessions` and `batch`, the session and Batch API limits; `limit("sessions", "max_per_key")` reads one |
 
 Answers are read by question id. An answer of a type this version does not know is returned as a `DecisionNode::UnknownAnswer` with its `type` and `raw` fields, so the rest of the decision still parses. So is an answer of a known type with a field missing or of the wrong type (a `truth` answer without a number in `truth`, for example): the decision does not fail. All answer classes derive from `DecisionNode::Answer`.
@@ -191,13 +195,48 @@ An upload is one `POST /v1/uploads` for the request's images, then one `PUT` per
 
 Every local image is checked before any request: its format from the first bytes (JPEG, PNG or WebP; a `media_type:` you give must match them), at most 10,485,760 bytes, and at most 40,000,000 pixels, read from the image header without decoding it. A request takes up to 16 images (URLs, inline and uploaded together), with unique ids; one upload call takes all of them. Many large images can still pass the model's token limit, which the API answers with a `ContextLimitError`. No image is ever resized or re-encoded. A file that cannot be read raises `ArgumentError` where the `Image` is made.
 
+## Points and boxes
+
+A `point` question finds one spot in an image and a `box` question a rectangle around something, so the answer can be drawn, cropped or handed to a robot.
+
+```ruby
+d = dn.decide(
+  images: [DecisionNode::Image.new("belt", url: "https://files.example.com/line-3/cam-2/0917.jpg")],
+  questions: {
+    pick: DecisionNode.point("Point to the yellow package closest to the robot arm."),
+    damage: DecisionNode.box("Draw a box around the damaged package.", image: "belt"),
+    any_damage: DecisionNode.truth("Is any package on the belt damaged?")
+  }
+)
+d["pick"].x                       # => 812
+d["pick"].y                       # => 455
+d["damage"].x1                    # => 300 (top-left corner x1, y1; bottom-right x2, y2)
+d["damage"].present               # => 0.95
+d["any_damage"].truth             # => 0.93
+```
+
+| Argument | Meaning |
+|---|---|
+| `image:` | The id of the image to look in. Needed when the request has two or more images; with one, that one is used. |
+| `units:` | `"pixels"` (the default): integers in pixels of the image as sent, after its EXIF orientation. `"normalized"`: fractions of the width and the height from 0 to 1. |
+
+| Field | Meaning |
+|---|---|
+| `x`, `y` (point) | The spot, from the top-left corner of the image, `x` to the right and `y` down. |
+| `x1`, `y1`, `x2`, `y2` (box) | The top-left and bottom-right corners, in the same units. |
+| `present` | The probability that what the instructions describe is in the image at all. Under a low value the place is only the best guess for something that is probably absent. |
+| `confidence` | The probability that the place is right if the thing is there. |
+| `image`, `width`, `height` | The image looked in and its size in pixels. |
+
+Every number is as the API sent it. Points and boxes go with `decide`, `decide_many` and batch requests; `systemone` takes neither. A request with a point or box question needs an image, and `image:` must name one of the request's images; these faults raise a `ValidationError` before anything is sent (see "Checked before sending").
+
 ## Videos
 
-Video is available when the API enables it. A video is sent as frames you already hold, each with its time in seconds: only the frames go to the API, never a video file, a video URL or sound. Every question sees every video, the images and the state.
+A video is sent as frames you already hold, each with its time in seconds: only the frames go to the API, never a video file, a video URL or sound. Every question sees every video, the images and the state.
 
 ```ruby
 # JPEG frames from a camera, two a second
-frames = camera_jpegs.each_with_index.map { |bytes, i| DecisionNode::Frame.new(30 + (i * 0.5), data: bytes) }
+frames = camera_jpegs.each_with_index.map { |bytes, i| DecisionNode::VideoFrame.new(30 + (i * 0.5), data: bytes) }
 
 d = dn.decide(
   state: "Warehouse camera 4, loading dock.",
@@ -212,11 +251,11 @@ d.warnings                  # set when the API read a video at a lower rate or r
 
 | Argument | Meaning |
 |---|---|
-| `Frame.new(t, data:)`, `Frame.new(t, path:)` | A frame's time in seconds (0 or more, larger than the frame before it) and its JPEG, PNG or WebP bytes; the media type comes from the bytes. |
-| `Frame.new(t, base64:, media_type:)` | The same from base64 text, sent as given, with its media type. |
+| `VideoFrame.new(t, data:)`, `VideoFrame.new(t, path:)` | A frame's time in seconds (0 or more, larger than the frame before it) and its JPEG, PNG or WebP bytes; the media type comes from the bytes. |
+| `VideoFrame.new(t, base64:, media_type:)` | The same from base64 text, sent as given, with its media type. |
 | `Video.new(id, frames:, fps: nil, start: nil, end: nil)` | Up to 4 videos a request. `id` is unique across the request's images and videos. `fps` caps the rate the API reads (above 0, at most 4); `start` and `end` choose the window on the frames' own times. Each is sent only when given. |
 
-Videos go with `decide`, `systemone`, the helpers, `decide_many` and batch requests; sessions take none. Frames are always sent inline as base64: they are never uploaded and never counted toward `inline_threshold`, and no frame is resized or re-encoded. A Hash in the API's wire form works wherever a `Video` or a `Frame` does.
+Videos go with `decide`, `systemone`, the helpers, `decide_many` and batch requests; sessions take none. Frames are always sent inline as base64: they are never uploaded and never counted toward `inline_threshold`, and no frame is resized or re-encoded. A Hash in the API's wire form works wherever a `Video` or a `VideoFrame` does.
 
 The SDK checks a video's form before sending, in the API's order and words: at most 4 videos, an id, ids unique across images and videos, a non-empty frame list, each frame's time a number of at least 0 and larger than the one before, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` at least 0, and `end` after `start`. A fault raises `BadRequestError` with `error_type` `api_usage_error`. How many frames a request may hold, a frame's bytes and size, and whether the window holds a frame are the API's to judge.
 
@@ -231,7 +270,8 @@ The SDK checks every fixed rule the API documents before any network call, so th
 | More than 128 objects and arrays inside each other; an unknown question type (on `systemone`, anything but truth, choice and score) | `BadRequestError`, "Invalid request." | `api_usage_error` |
 | A question that is not a Hash or has no `type`; instructions, a state, an option description, a score level or a truth side that is not a String, Hash or Array; a choice or score without criteria, or with criteria of the wrong shape; a score with no levels | `ValidationError` with the server's `entries` | null |
 | A number grid: a bound that is not a finite number, beyond 2^53, `step` not above 0, more than 6 decimals in `min` or `step`, beyond the decimal bound, `min` above `max`, more than 4,096 values (counted in exact decimals) | `ValidationError` with the server's `entries` | null |
-| A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions | `BadRequestError` with the API's documented message | null |
+| A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's documented message | null |
+| A point or box question in a request with no image, without `image:` when the request has two or more, with an `image:` that is not one of the request's image ids, or with `units:` other than `"pixels"` and `"normalized"` | `ValidationError` with the server's `entries` | null |
 | More than 16 images, an empty or repeated image id, bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
 | An `https` image URL over 2,048 characters, with user information, on a port other than 443, without a host, or naming a private or reserved address literally | `BadRequestError` | `image_url_refused` |
 | A video fault: see "Videos" | `BadRequestError` with the API's message | `api_usage_error` |
@@ -464,7 +504,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.7) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.8) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 

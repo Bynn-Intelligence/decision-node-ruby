@@ -14,7 +14,7 @@ class VideoTest < Minitest::Test
   end
 
   def frames(*times)
-    times.map { |t| DecisionNode::Frame.new(t, data: jpeg) }
+    times.map { |t| DecisionNode::VideoFrame.new(t, data: jpeg) }
   end
 
   def decide_video(dn, video, **kw)
@@ -33,8 +33,8 @@ class VideoTest < Minitest::Test
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
     dn = client(http)
     text = [jpeg].pack("m0")
-    video = DecisionNode::Video.new("dock", frames: [DecisionNode::Frame.new(30, data: jpeg),
-                                                     DecisionNode::Frame.new(30.5, base64: text, media_type: "image/png")],
+    video = DecisionNode::Video.new("dock", frames: [DecisionNode::VideoFrame.new(30, data: jpeg),
+                                                     DecisionNode::VideoFrame.new(30.5, base64: text, media_type: "image/png")],
                                             fps: 2, start: 30, end: 31.5)
     decide_video(dn, video)
     body = http.calls.first.json
@@ -100,10 +100,10 @@ class VideoTest < Minitest::Test
                  refused { |dn| decide_video(dn, DecisionNode::Video.new("cam", frames: frames(1.5, 1.5))) }
     assert_equal "Video 'cam': frame 1: t must be larger than the frame before it (1e+06).",
                  refused { |dn| decide_video(dn, DecisionNode::Video.new("cam", frames: frames(1_000_000, 2))) }
-    gif = DecisionNode::Frame.new(0, data: "GIF89a\x01\x00".b)
+    gif = DecisionNode::VideoFrame.new(0, data: "GIF89a\x01\x00".b)
     assert_equal "Video 'cam': frame 0: media_type must be one of image/jpeg, image/png, image/webp.",
                  refused { |dn| decide_video(dn, DecisionNode::Video.new("cam", frames: [gif])) }
-    no_type = DecisionNode::Frame.new(0, base64: [jpeg].pack("m0"))
+    no_type = DecisionNode::VideoFrame.new(0, base64: [jpeg].pack("m0"))
     assert_equal "Video 'cam': frame 0: media_type must be one of image/jpeg, image/png, image/webp.",
                  refused { |dn| decide_video(dn, DecisionNode::Video.new("cam", frames: [no_type])) }
     [5, 0, -1].each do |fps|
@@ -124,15 +124,15 @@ class VideoTest < Minitest::Test
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
     dn = client(http)
     # A frame's bytes against its declared type, and the frame count, are the server's.
-    decide_video(dn, DecisionNode::Video.new("cam", frames: [DecisionNode::Frame.new(0, data: jpeg, media_type: "image/png")]))
+    decide_video(dn, DecisionNode::Video.new("cam", frames: [DecisionNode::VideoFrame.new(0, data: jpeg, media_type: "image/png")]))
     decide_video(dn, DecisionNode::Video.new("cam", frames: frames(*Array.new(200) { |i| i * 0.5 })))
     assert_equal 2, http.calls.size
   end
 
   def test_argument_errors
-    assert_raises(ArgumentError) { DecisionNode::Frame.new("1", data: jpeg) }
-    assert_raises(ArgumentError) { DecisionNode::Frame.new(1, data: jpeg, base64: "x") }
-    assert_raises(ArgumentError) { DecisionNode::Frame.new(1, path: "/no/such/frame.jpg") }
+    assert_raises(ArgumentError) { DecisionNode::VideoFrame.new("1", data: jpeg) }
+    assert_raises(ArgumentError) { DecisionNode::VideoFrame.new(1, data: jpeg, base64: "x") }
+    assert_raises(ArgumentError) { DecisionNode::VideoFrame.new(1, path: "/no/such/frame.jpg") }
     assert_raises(ArgumentError) { DecisionNode::Video.new("cam", frames: "x") }
     assert_raises(ArgumentError) { DecisionNode::Video.new("cam", frames: ["x"]) }
     assert_raises(ArgumentError) { DecisionNode::Video.new("cam", frames: frames(0), fps: "2") }

@@ -3,9 +3,9 @@
 class DecisionNode
   # One frame of a video: its time in seconds and its image.
   #
-  #   DecisionNode::Frame.new(30.0, data: jpeg_bytes)                       # media type from the bytes
-  #   DecisionNode::Frame.new(30.5, path: "frames/0001.jpg")
-  #   DecisionNode::Frame.new(31.0, base64: "/9j/4AAQ...", media_type: "image/jpeg")
+  #   DecisionNode::VideoFrame.new(30.0, data: jpeg_bytes)                       # media type from the bytes
+  #   DecisionNode::VideoFrame.new(30.5, path: "frames/0001.jpg")
+  #   DecisionNode::VideoFrame.new(31.0, base64: "/9j/4AAQ...", media_type: "image/jpeg")
   #
   # Bytes are sent as base64; base64 text is sent exactly as given and needs
   # its `media_type`. A frame is always sent inline: it is never uploaded and
@@ -17,7 +17,7 @@ class DecisionNode
   # image/jpeg, image/png or image/webp raise BadRequestError as the API
   # would. A time that is not a number, or a source of the wrong type, raises
   # ArgumentError here.
-  class Frame
+  class VideoFrame
     # The frame's time in seconds.
     attr_reader :t
     # "image/jpeg", "image/png" or "image/webp": as given, else detected from
@@ -74,25 +74,25 @@ class DecisionNode
 
   # A video sent as the frames the caller sampled, each with its time.
   #
-  #   frames = jpegs.each_with_index.map { |bytes, i| DecisionNode::Frame.new(i * 0.5, data: bytes) }
+  #   frames = jpegs.each_with_index.map { |bytes, i| DecisionNode::VideoFrame.new(i * 0.5, data: bytes) }
   #   DecisionNode::Video.new("dock", frames: frames)
   #   DecisionNode::Video.new("dock", frames: frames, fps: 4, start: 30, end: 90)
   #
   # `fps` caps the rate the API reads (above 0, at most 4; the API's default
   # is 2); `start` and `end` are the window read, on the frames' own times.
-  # Each is sent only when given. The API takes videos when it enables them;
-  # only these frames are sent, never a video file, a URL or sound.
+  # Each is sent only when given. Only these frames are sent, never a video
+  # file, a URL or sound.
   class Video
     attr_reader :id, :frames, :fps, :start, :end
 
     def initialize(id, frames:, fps: nil, start: nil, end: nil)
       last = binding.local_variable_get(:end)
-      raise ArgumentError, "frames: must be an Array of DecisionNode::Frame" unless frames.is_a?(Array)
+      raise ArgumentError, "frames: must be an Array of DecisionNode::VideoFrame" unless frames.is_a?(Array)
 
       frames.each do |frame|
-        next if frame.is_a?(Frame) || frame.is_a?(Hash)
+        next if frame.is_a?(VideoFrame) || frame.is_a?(Hash)
 
-        raise ArgumentError, "each frame must be a DecisionNode::Frame or a wire-form Hash, got #{frame.class}"
+        raise ArgumentError, "each frame must be a DecisionNode::VideoFrame or a wire-form Hash, got #{frame.class}"
       end
       { "fps" => fps, "start" => start, "end" => last }.each do |name, value|
         next if value.nil? || value.is_a?(Integer) || value.is_a?(Float)
@@ -112,7 +112,7 @@ class DecisionNode
       wire["fps"] = fps unless fps.nil?
       wire["start"] = start unless start.nil?
       wire["end"] = self.end unless self.end.nil?
-      wire["frames"] = frames.map { |f| f.is_a?(Frame) ? f.to_h : f }
+      wire["frames"] = frames.map { |f| f.is_a?(VideoFrame) ? f.to_h : f }
       wire
     end
 

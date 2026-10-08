@@ -155,10 +155,70 @@ class DecisionNode
     end
   end
 
+  # What the answers to `point` and `box` questions share: a place in an
+  # image. Every number is as received: integers in pixels, fractions when
+  # the question asked for normalized units.
+  class PlaceAnswer < Answer
+    # The probability that what the instructions describe is in the image
+    # at all; under a low value the place is only the best guess.
+    attr_reader :present
+    # The probability that the place is right if the thing is there.
+    attr_reader :confidence
+    # The id of the image looked in.
+    attr_reader :image
+    # The image's size in pixels.
+    attr_reader :width, :height
+
+    def self.well_formed?(raw)
+      (self::COORDINATES + %w[present confidence width height]).all? { |k| number?(raw[k]) } && raw["image"].is_a?(String)
+    end
+
+    def initialize(raw)
+      super
+      @present = raw["present"]
+      @confidence = raw["confidence"]
+      @image = raw["image"]
+      @width = raw["width"]
+      @height = raw["height"]
+    end
+  end
+
+  # The answer to a `point` question: the spot `x`, `y` from the top-left
+  # corner of the image, `x` to the right and `y` down.
+  class PointAnswer < PlaceAnswer
+    COORDINATES = %w[x y].freeze
+
+    attr_reader :x, :y
+
+    def initialize(raw)
+      super
+      @x = raw["x"]
+      @y = raw["y"]
+    end
+  end
+
+  # The answer to a `box` question: the top-left corner `x1`, `y1` and the
+  # bottom-right corner `x2`, `y2`.
+  class BoxAnswer < PlaceAnswer
+    COORDINATES = %w[x1 y1 x2 y2].freeze
+
+    attr_reader :x1, :y1, :x2, :y2
+
+    def initialize(raw)
+      super
+      @x1 = raw["x1"]
+      @y1 = raw["y1"]
+      @x2 = raw["x2"]
+      @y2 = raw["y2"]
+    end
+  end
+
+  private_constant :PlaceAnswer
+
   class Answer
     TYPES = {
       "truth" => TruthAnswer, TruthAnswer::STRICT_TYPE => TruthAnswer, "choice" => ChoiceAnswer,
-      "score" => ScoreAnswer, "number" => NumberAnswer
+      "score" => ScoreAnswer, "number" => NumberAnswer, "point" => PointAnswer, "box" => BoxAnswer
     }.freeze
   end
 
