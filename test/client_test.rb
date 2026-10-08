@@ -135,7 +135,7 @@ class ClientTest < Minitest::Test
   def test_unserialisable_value_fails_before_sending
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
     assert_raises(ArgumentError) do
-      client(http).decide(state: Float::NAN, questions: { "q" => DecisionNode.truth("?") })
+      client(http).decide(state: { "reading" => Float::NAN }, questions: { "q" => DecisionNode.truth("?") })
     end
     assert_empty http.calls
   end

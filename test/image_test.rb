@@ -32,11 +32,25 @@ class ImageTest < Minitest::Test
     DecisionNode::Image.new("exact", data: exact).validate!
   end
 
+  def url_fault(url)
+    DecisionNode::Checks.image_url!("u", url)
+    nil
+  rescue DecisionNode::BadRequestError => e
+    e.error_type
+  end
+
   def test_url_checks
-    DecisionNode::Image.new("u", url: "https://example.com/a.png").validate!
-    ["http://example.com/a.png", "ftp://example.com/a.png", "https://", "https://example.com/#{'a' * 2048}"].each do |url|
-      assert_raises(DecisionNode::BadRequestError, url) { DecisionNode::Image.new("u", url: url).validate! }
+    assert_nil url_fault("https://example.com/a.png")
+    assert_nil url_fault("https://example.com:443/a.png")
+    assert_nil url_fault("https://8.8.8.8/a.png")
+    assert_nil url_fault("https://example.com/#{'a' * (2048 - 20)}")
+    assert_equal "api_usage_error", url_fault("http://example.com/a.png")
+    assert_equal "api_usage_error", url_fault("ftp://example.com/a.png")
+    %w[https:// https://user:pw@example.com/a https://example.com:8443/a https://10.1.2.3/a https://169.254.169.254/latest
+       https://[::1]/a https://[::ffff:192.168.0.1]/a https://[64:ff9b::a00:1]/a https://[fe80::1]:443/a].each do |url|
+      assert_equal "image_url_refused", url_fault(url), url
     end
+    assert_equal "image_url_refused", url_fault("https://example.com/#{'a' * 2048}")
   end
 
   def test_base64_io_and_bytes_give_the_same_image

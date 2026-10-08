@@ -159,9 +159,17 @@ class DecisionNode
     # questions:: the ids of the session's questions to ask (default all).
     # reset::     true empties the window before this frame is answered.
     # seq::       the frame's number; by default a counter from 1.
+    #
+    # A frame that breaks a fixed rule (no frame and no image, an empty frame,
+    # an unknown question id, a seq out of range, a URL image, an image the
+    # API would refuse) raises BadRequestError; nothing is written.
     def send_frame(frame: nil, image: nil, questions: nil, reset: nil, seq: nil)
       raise ArgumentError, "connect the session before sending" if @stream.nil?
 
+      # The frame's fixed rules first: a fault raises and nothing is written,
+      # and the refused frame takes no seq.
+      Checks.frame!(frame: frame, image: image, questions: questions, reset: reset, seq: seq,
+                    known_questions: @raw["questions"], limits: @client.__send__(:limits_for, model))
       message = { "seq" => seq.nil? ? next_seq : seq }
       message["frame"] = frame unless frame.nil?
       message["image"] = @client.__send__(:frame_image, image) unless image.nil?
@@ -240,7 +248,7 @@ class DecisionNode
     end
 
     def parse_message(text)
-      raw = JSON.parse(text)
+      raw = JSON.parse(text, max_nesting: false)
       raise JSON::ParserError, "not an object" unless raw.is_a?(Hash)
 
       raw.key?("error") ? FrameError.new(raw) : Reply.new(raw)

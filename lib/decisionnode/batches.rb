@@ -133,8 +133,7 @@ class DecisionNode
     # Adds requests to a draft (`POST /v1/batches/{id}/requests`), in calls of
     # at most 10 MiB each, in order. Returns the Batch after the last call.
     def add(batch_id, requests)
-      lines = lines_for(requests)
-      raise ArgumentError, "add needs at least one request" if lines.empty?
+      lines = lines_for(requests, allow_empty: false)
 
       path = "/v1/batches/#{segment(batch_id)}/requests"
       batch = nil
@@ -165,9 +164,10 @@ class DecisionNode
 
     # One page of the key's batches, newest first (`GET /v1/batches`).
     def list(offset: nil, limit: nil)
+      Checks.list!(offset, limit)
       query = {}
-      query["offset"] = Integer(offset) unless offset.nil?
-      query["limit"] = Integer(limit) unless limit.nil?
+      query["offset"] = offset unless offset.nil?
+      query["limit"] = limit unless limit.nil?
       path = query.empty? ? "/v1/batches" : "/v1/batches?#{URI.encode_www_form(query)}"
       BatchPage.new(call("GET", path, nil))
     end
@@ -180,7 +180,7 @@ class DecisionNode
       text.each_line.filter_map do |line|
         next if line.strip.empty?
 
-        BatchResult.new(JSON.parse(line), builder)
+        BatchResult.new(JSON.parse(line, max_nesting: false), builder)
       end
     rescue JSON::ParserError => e
       raise ServerError.new("a results line is not JSON: #{e.message}")
@@ -212,11 +212,11 @@ class DecisionNode
       URI.encode_www_form_component(id.to_s)
     end
 
-    def lines_for(requests)
+    def lines_for(requests, allow_empty: true)
       raise ArgumentError, "requests must be an Array of Hashes" unless requests.respond_to?(:to_a)
 
       list = requests.to_a
-      list.each_with_index.map { |req, i| @client.__send__(:checked_line, req, i) } # every line checked first
+      @client.__send__(:check_lines, list, allow_empty: allow_empty) # every line checked first
       list.each_with_index.map { |req, i| @client.__send__(:batch_line, req, i) }
     end
 

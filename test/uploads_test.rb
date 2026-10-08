@@ -169,7 +169,7 @@ class UploadsTest < Minitest::Test
     ids = dn.upload([DecisionNode::Image.new("a", data: png), DecisionNode::Image.new("b", data: png)])
     assert_equal 1, ids.uniq.size # the same bytes are one upload
     assert_equal 1, api.calls_to("PUT").size
-    assert_equal ids, dn.upload([DecisionNode::Image.new("c", data: png)] * 2)
+    assert_equal ids, dn.upload([DecisionNode::Image.new("c", data: png), DecisionNode::Image.new("d", data: png)])
     assert_equal 1, api.calls_to("POST", "/v1/uploads").size
     assert_raises(ArgumentError) { dn.upload([DecisionNode::Image.new("u", url: "https://example.com/u.png")]) }
   end

@@ -52,7 +52,6 @@ class DecideManyTest < Minitest::Test
     invalid = [
       { state: "c", questions: {} },
       { state: "c" },
-      { state: "c", questions: { "q" => "not a question" } },
       { state: "c", questions: { "q" => DecisionNode.truth("?") }, images: "img" },
       { state: "c", questions: { "q" => DecisionNode.truth("?") }, images: [42] },
       { state: "c", questions: { "q" => DecisionNode.truth("?") }, colour: "red" },

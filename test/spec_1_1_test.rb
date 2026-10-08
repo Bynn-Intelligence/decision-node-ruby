@@ -181,7 +181,14 @@ class Spec11Test < Minitest::Test
 
   def test_every_line_is_checked_before_anything_is_sent
     http = FakeHTTP.new(FakeHTTP.json(201, batch))
-    assert_raises(ArgumentError) { client(http).batches.create([line("a"), { state: "s" }]) }
+    error = assert_raises(DecisionNode::BadRequestError) { client(http).batches.create([line("a"), { state: "s" }]) }
+    assert_equal ["Line 2 has no custom_id.", "api_usage_error"], [error.message, error.error_type]
+    assert_raises(ArgumentError) { client(http).batches.create([line("a"), "not a hash"]) }
+    error = assert_raises(DecisionNode::BadRequestError) { client(http).batches.create([line("a"), line("a")]) }
+    assert_equal 'Line 2: custom_id "a" is already in the batch.', error.message
+    assert_raises(DecisionNode::BadRequestError) { client(http).batches.add("batch_01J9ZB8Q3T", []) }
+    assert_raises(DecisionNode::BadRequestError) { client(http).batches.list(limit: 101) }
+    assert_raises(DecisionNode::BadRequestError) { client(http).batches.list(offset: -1) }
     assert_raises(DecisionNode::BadRequestError) { client(http).batches.create([line("a"), line("b", questions: { "q" => DecisionNode.choice("?", []) })]) }
     assert_empty http.calls
   end
@@ -252,7 +259,7 @@ class Spec11Test < Minitest::Test
   def test_run_batch_checks_its_arguments_before_any_request
     http = FakeHTTP.new(FakeHTTP.json(201, batch))
     assert_raises(ArgumentError) { client(http).run_batch([line("a")], poll_interval: 9.9) }
-    assert_raises(ArgumentError) { client(http).run_batch([{ state: "no id" }], poll_interval: 10) }
+    assert_raises(DecisionNode::BadRequestError) { client(http).run_batch([{ state: "no id" }], poll_interval: 10) }
     assert_empty http.calls
   end
 

@@ -95,7 +95,9 @@ class DecisionNode
     @http = checked_http_client(http_client) || NetHTTPTransport.new
     @logger = logger
     @sleeper = ->(seconds) { sleep(seconds) }
-    @uploads = UploadCache.new
+    @clock = -> { Time.now.to_f }
+    @uploads = UploadCache.new(clock: -> { @clock.call })
+    @held = {}
     @inflight = {}
     @inflight_lock = Mutex.new
     @batches = Batches.new(self)
@@ -206,11 +208,15 @@ class DecisionNode
     decide(state: state, questions: GATE_QUESTIONS, images: images, model: model)
   end
 
-  # Lists the models with their published limits, as ModelInfo entries.
+  # Lists the models with their published limits, as ModelInfo entries. The
+  # client keeps the list: a limit only `/v1/models` states (a session's
+  # `max_window`, a batch's `requests_per_batch`, a model without number
+  # questions) is then checked before sending.
   def models
     body, = request("GET", "/v1/models", nil)
-    list = body.is_a?(Hash) ? body["models"] : nil
-    (list || []).map { |m| ModelInfo.new(m) }
+    list = body.is_a?(Hash) && body["models"].is_a?(Array) ? body["models"].grep(Hash) : []
+    @held = list.to_h { |m| [m["name"], m] }.freeze
+    list.map { |m| ModelInfo.new(m) }
   end
 
   # Sends `body` to POST /v1/decide exactly as given and returns the parsed
@@ -235,6 +241,7 @@ class DecisionNode
     body["questions"] = qs
     body["window"] = window unless window.nil?
     body["ttl_seconds"] = ttl_seconds unless ttl_seconds.nil?
+    Checks.session_open!(body, limits: limits_for(body["model"]))
     raw, = request("POST", "/v1/sessions", encode(body), encoded: true, policy: :session_open)
     Session.new(self, raw)
   end
@@ -279,7 +286,7 @@ class DecisionNode
     raise ArgumentError, "requests must be an Array of Hashes" unless requests.respond_to?(:to_a)
 
     list = requests.to_a
-    list.each_with_index { |req, i| checked_line(req, i) }
+    check_lines(list, allow_empty: true)
     draft = @batches.create([])
     begin
       @batches.add(draft.id, list) unless list.empty?
@@ -431,16 +438,29 @@ class DecisionNode
       raise ArgumentError, "questions must hold at least one question"
     end
 
-    map = questions.each_pair.to_h do |id, q|
-      raise ArgumentError, "question #{id.to_s.inspect} must be a Hash, got #{q.class}" unless q.is_a?(Hash)
-
-      [id.to_s, q.keys.all?(String) ? q : q.transform_keys(&:to_s)]
+    # A question that is not a Hash is left for the checks, which refuse it as the API does.
+    questions.each_pair.to_h do |id, q|
+      [id.to_s, !q.is_a?(Hash) || q.keys.all?(String) ? q : q.transform_keys(&:to_s)]
     end
-    Checks.questions!(map)
-    map
   end
 
-  # The image list, checked: at most 4, unique ids, each image's own rules.
+  # The /v1/models entry of a model, when this client holds it, with its name.
+  def limits_for(model)
+    name = given(model) || @model
+    entry = @held[name]
+    entry ? entry.merge("model" => name) : {}
+  end
+
+  # Every fixed rule of a request before it is sent: the body (its images as
+  # placeholders, so the nesting counts them), then the images themselves.
+  def check_request(body, images, profile: :decide)
+    probe = images.empty? ? body : body.merge("images" => Array.new(images.size) { { "id" => "" } })
+    limits = limits_for(body["model"])
+    Checks.request!(probe, profile: profile, limits: limits)
+    Checks.images!(images, limits: limits)
+  end
+
+  # The image list as given: an Array of Image or wire-form Hashes.
   def prepared_images(images)
     return [] if images.nil?
     raise ArgumentError, "images must be an Array of DecisionNode::Image" unless images.is_a?(Array)
@@ -450,7 +470,6 @@ class DecisionNode
 
       raise ArgumentError, "each image must be a DecisionNode::Image or a wire-form Hash, got #{img.class}"
     end
-    Checks.images!(images)
     images
   end
 
@@ -462,6 +481,7 @@ class DecisionNode
     imgs = prepared_images(images)
     state = state.equal?(UNSET) || state.nil? ? "" : state
     model = given(model) || @model
+    check_request(body_for(model, state, qs, nil), imgs, profile: strict ? :systemone : :decide)
     if imgs.any? { |img| img.is_a?(Image) && img.local? }
       encode(body_for(model, state, qs, nil)) # a value that cannot be serialised fails here
       Prepared.new(state, qs, imgs, model, nil)
@@ -549,11 +569,7 @@ class DecisionNode
   def frame_image(image)
     return image if image.is_a?(Hash)
     raise ArgumentError, "image must be a DecisionNode::Image, got #{image.class}" unless image.is_a?(Image)
-    if image.url
-      raise BadRequestError.new("A frame's image takes bytes or an upload, not a url.", error_type: "api_usage_error")
-    end
 
-    Checks.images!([image])
     wires, = image_wires([image])
     wires.first.reject { |k, _| k == "id" }
   end
@@ -569,20 +585,24 @@ class DecisionNode
   # ---- batches
 
   def line_parts(req, index)
-    raise ArgumentError, "batch request #{index} must be a Hash, got #{req.class}" unless req.is_a?(Hash)
+    raise ArgumentError, "batch request #{index + 1} must be a Hash, got #{req.class}" unless req.is_a?(Hash)
 
     args = req.to_h { |k, v| [k.to_s, v] }
-    raise ArgumentError, "batch request #{index} needs a custom_id" if args["custom_id"].nil?
-
     [args, prepared_questions(args["questions"]), prepared_images(args["images"])]
   rescue ArgumentError => e
     raise e if e.message.start_with?("batch request")
 
-    raise ArgumentError, "batch request #{index}: #{e.message}"
+    raise ArgumentError, "batch request #{index + 1}: #{e.message}"
   end
 
-  def checked_line(req, index)
-    line_parts(req, index)
+  # The requests of one create or add call, every line checked before any is
+  # sent: the custom_id rules, then each line as a decide request.
+  def check_lines(requests, allow_empty:)
+    Checks.lines!(requests, allow_empty: allow_empty, limits: limits_for(nil))
+    requests.each_with_index do |req, i|
+      args, questions, images = line_parts(req, i)
+      check_request(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil), images)
+    end
     nil
   end
 
@@ -600,7 +620,7 @@ class DecisionNode
   # ---- transport
 
   def encode(body)
-    JSON.generate(body)
+    JSON.generate(body, max_nesting: false) # the nesting limit is checked with the request
   rescue JSON::GeneratorError, Encoding::UndefinedConversionError, SystemStackError => e
     raise ArgumentError, "the request cannot be serialised as JSON: #{e.message}"
   end
@@ -687,7 +707,7 @@ class DecisionNode
   end
 
   def parse_success(response)
-    JSON.parse(response.body)
+    JSON.parse(response.body, max_nesting: false)
   rescue JSON::ParserError, TypeError => e
     raise ServerError.new("the response is not JSON: #{e.message}",
                           status: response.status, request_id: response.headers["x-request-id"],
@@ -727,7 +747,7 @@ class DecisionNode
 
   def error_for(response)
     body = begin
-      JSON.parse(response.body.to_s)
+      JSON.parse(response.body.to_s, max_nesting: false)
     rescue JSON::ParserError
       nil
     end

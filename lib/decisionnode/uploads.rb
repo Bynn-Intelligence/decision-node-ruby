@@ -82,7 +82,7 @@ class DecisionNode
 
         raise ArgumentError, "upload takes images made from a path, bytes, base64 or an IO"
       end
-      images.each(&:validate!)
+      Checks.images!(images, limits: limits_for(nil))
       ids = images.map { |img| @uploads.get(cache_key(img)) }
       missing = images.each_index.reject { |i| ids[i] }
       # One presign takes up to 4 files.
@@ -248,7 +248,7 @@ class DecisionNode
 
       uploads.each { |u| storage_uri(u["url"]) } # every URL is checked before any byte is sent
       ttl = body["expires_in"].is_a?(Numeric) ? body["expires_in"] : 300
-      [uploads, Process.clock_gettime(Process::CLOCK_MONOTONIC) + ttl]
+      [uploads, @clock.call + ttl] # the URLs live expires_in seconds, by the client's clock
     end
 
     # The PUTs, in parallel when there are several. The first failure is raised
@@ -302,7 +302,7 @@ class DecisionNode
           attempt += 1
           next
         end
-        if status == 403 && !represigned && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= valid_until
+        if status == 403 && !represigned && @clock.call >= valid_until
           fresh, fresh_until = presign([file])
           put_object(image, file, fresh.first, fresh_until, represigned: true)
           target.replace(fresh.first)

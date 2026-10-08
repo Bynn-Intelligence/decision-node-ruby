@@ -74,7 +74,7 @@ class DecisionNode
 
     # [width, height] read from the header, or nil.
     def dimensions
-      return nil unless @data
+      return nil unless @data && @data_type
 
       @lock.synchronize do
         @dimensions = ImageHeader.dimensions(@data, @data_type) unless defined?(@dimensions)
@@ -92,14 +92,13 @@ class DecisionNode
       @md5 ||= Digest::MD5.digest(@data)
     end
 
-    # Raises BadRequestError, as the API would answer, when the image breaks
-    # one of the API's fixed rules; returns self otherwise. The result is kept,
-    # so an Image reused across requests is checked once.
-    def validate!
-      fault = @lock.synchronize do
-        @fault = find_fault unless defined?(@fault)
-        @fault
-      end
+    # Raises BadRequestError (`api_usage_error`), as the API would answer,
+    # when the image's bytes break one of the API's rules: the format from the
+    # magic bytes (and a declared media type that differs), the size, and the
+    # pixel count read from the header. Returns self otherwise. A URL or an
+    # upload id is checked with the request (Checks.images!).
+    def validate!(max_bytes: MAX_BYTES)
+      fault = find_fault(max_bytes)
       raise BadRequestError.new(fault, error_type: "api_usage_error") if fault
 
       self
@@ -166,34 +165,23 @@ class DecisionNode
       nil
     end
 
-    def find_fault
-      return url_fault if @url
+    # The first rule the bytes break, or nil. The pixel size is read once.
+    def find_fault(max_bytes)
       return nil unless @data
 
       found = @data_type
       return "Image #{@id} is not a JPEG, PNG or WebP image." if found.nil?
-      if @declared && @declared != found
-        return "Image #{@id} could not be decoded as #{@declared}: its bytes are #{found}."
-      end
-      return "Image #{@id} is larger than 10 MB." if @data.bytesize > MAX_BYTES
+      return "Image #{@id} could not be decoded as #{@declared}." if @declared && @declared != found
+      return "Image #{@id} is larger than #{max_bytes / 1_048_576} MB." if @data.bytesize > max_bytes
 
-      @dimensions = ImageHeader.dimensions(@data, found) unless defined?(@dimensions)
-      size = @dimensions
+      size = @lock.synchronize do
+        @dimensions = ImageHeader.dimensions(@data, found) unless defined?(@dimensions)
+        @dimensions
+      end
       return "Image #{@id}: its header cannot be read." if size.nil?
 
       width, height = size
       return "Image #{@id} is #{width}x#{height} pixels, over 40 megapixels." if width * height > MAX_PIXELS
-
-      nil
-    end
-
-    def url_fault
-      unless @url.is_a?(String) && @url.match?(%r{\Ahttps://[^\s/?#]+}i) && @url.length <= MAX_URL_CHARS
-        return "Image #{@id}: only https URLs of at most #{MAX_URL_CHARS} characters are accepted."
-      end
-      if @declared && !MEDIA_TYPES.include?(@declared)
-        return "Image #{@id}: media_type must be one of #{MEDIA_TYPES.join(', ')}."
-      end
 
       nil
     end
