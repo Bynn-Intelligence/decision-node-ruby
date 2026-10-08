@@ -50,11 +50,11 @@ class DecisionNode
   # server sent, so a new question type does not break an older client.
   class UnknownAnswer < Answer; end
 
-  # The answer to a `truth` question. An answer under the type name that
-  # `/v1/systemone` uses for truth questions (STRICT_TYPE) is read the same way.
+  # The answer to a `truth` question. An answer under the API's older name
+  # for the type, which a raw question may still use, is read the same way.
   class TruthAnswer < Answer
-    # The wire name `/v1/systemone` takes for the truth type.
-    STRICT_TYPE = "noul"
+    OLD_TYPE = "noul"
+    private_constant :OLD_TYPE
 
     # The probability that the answer is true.
     attr_reader :truth
@@ -64,7 +64,7 @@ class DecisionNode
     end
 
     def self.value_field(raw)
-      raw["type"] == STRICT_TYPE ? STRICT_TYPE : "truth"
+      raw["type"] == OLD_TYPE ? OLD_TYPE : "truth"
     end
 
     def initialize(raw)
@@ -217,7 +217,7 @@ class DecisionNode
 
   class Answer
     TYPES = {
-      "truth" => TruthAnswer, TruthAnswer::STRICT_TYPE => TruthAnswer, "choice" => ChoiceAnswer,
+      "truth" => TruthAnswer, "noul" => TruthAnswer, "choice" => ChoiceAnswer,
       "score" => ScoreAnswer, "number" => NumberAnswer, "point" => PointAnswer, "box" => BoxAnswer
     }.freeze
   end

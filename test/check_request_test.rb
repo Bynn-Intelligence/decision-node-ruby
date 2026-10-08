@@ -18,7 +18,8 @@ class CheckRequestTest < Minitest::Test
     dn = client(http, inline_threshold: 0) # sending would upload the image
     image = DecisionNode::Image.new("a", data: File.binread(File.join(FIXTURES, "image.png")))
     assert_nil dn.check_request("decide", state: "s", questions: questions, images: [image])
-    assert_nil dn.check_request(:systemone, { state: "s", questions: questions })
+    assert_nil dn.check_request(:decide, { state: "s", questions: questions })
+    assert_raises(ArgumentError) { dn.check_request("systemone", state: "s", questions: questions) }
     assert_nil dn.check_request("open_session", "questions" => questions, "window" => 4)
     assert_nil dn.check_request("batches.create", requests: [])
     assert_nil dn.check_request("batches.add", batch_id: "batch_01J9ZB8Q3T",

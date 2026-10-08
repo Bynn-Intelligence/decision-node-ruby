@@ -58,8 +58,7 @@ class PointBoxTest < Minitest::Test
     bare = assert_raises(DecisionNode::BadRequestError) { dn.decide(images: [BELT], questions: { "pick" => DecisionNode.box }) }
     assert_equal "Box question must have instructions: pick", bare.message
     assert_nil bare.error_type
-    strict = assert_raises(DecisionNode::BadRequestError) { dn.systemone(images: [BELT], questions: { "pick" => DecisionNode.point("Where?") }) }
-    assert_equal "api_usage_error", strict.error_type
+    refute_respond_to dn, :systemone
     assert_nil dn.check_request("open_session", questions: { "pick" => DecisionNode.point("Where?") })
   end
 end

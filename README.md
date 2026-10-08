@@ -116,7 +116,6 @@ The client checks its arguments when it is made and raises `ArgumentError` for a
 | `score(state:, instructions:, levels:, images: nil, videos: nil, model: nil)` | A `ScoreAnswer` |
 | `number(state:, instructions:, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil)` | A `NumberAnswer` |
 | `gate(action:, context: nil, images: nil, videos: nil, model: nil)` | A `Decision` with the answers `risk` (score), `touches_production` (truth) and `verdict` (choice of `allow`, `confirm`, `block`) |
-| `systemone(state:, questions:, images: nil, videos: nil, model: nil)` | A `Decision` from `POST /v1/systemone`, the strict path: `truth`, `choice` and `score` questions, the model always sent |
 | `models` | An Array of `DecisionNode::ModelInfo` |
 | `upload(images)` | One upload id per image (see "Images") |
 | `open_session(questions:, state: nil, instructions: nil, model: nil, window: nil, ttl_seconds: nil)` | A `DecisionNode::Session` (see "Sessions") |
@@ -228,7 +227,7 @@ d["any_damage"].truth             # => 0.93
 | `confidence` | The probability that the place is right if the thing is there. |
 | `image`, `width`, `height` | The image looked in and its size in pixels. |
 
-Every number is as the API sent it. Points and boxes go with `decide`, `decide_many` and batch requests; `systemone` takes neither. A request with a point or box question needs an image, and `image:` must name one of the request's images; these faults raise a `ValidationError` before anything is sent (see "Checked before sending").
+Every number is as the API sent it. Points and boxes go with `decide`, `decide_many` and batch requests. A request with a point or box question needs an image, and `image:` must name one of the request's images; these faults raise a `ValidationError` before anything is sent (see "Checked before sending").
 
 ## Videos
 
@@ -255,7 +254,7 @@ d.warnings                  # set when the API read a video at a lower rate or r
 | `VideoFrame.new(t, base64:, media_type:)` | The same from base64 text, sent as given, with its media type. |
 | `Video.new(id, frames:, fps: nil, start: nil, end: nil)` | Up to 4 videos a request. `id` is unique across the request's images and videos. `fps` caps the rate the API reads (above 0, at most 4); `start` and `end` choose the window on the frames' own times. Each is sent only when given. |
 
-Videos go with `decide`, `systemone`, the helpers, `decide_many` and batch requests; sessions take none. Frames are always sent inline as base64: they are never uploaded and never counted toward `inline_threshold`, and no frame is resized or re-encoded. A Hash in the API's wire form works wherever a `Video` or a `VideoFrame` does.
+Videos go with `decide`, the helpers, `decide_many` and batch requests; sessions take none. Frames are always sent inline as base64: they are never uploaded and never counted toward `inline_threshold`, and no frame is resized or re-encoded. A Hash in the API's wire form works wherever a `Video` or a `VideoFrame` does.
 
 The SDK checks a video's form before sending, in the API's order and words: an id, ids unique across images and videos, a non-empty frame list, each frame's time a number of at least 0 and larger than the one before, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` at least 0, and `end` after `start`. A fault raises `BadRequestError` with `error_type` `api_usage_error`. More than 4 videos raises the API's `ValidationError`, a `too_long` entry on the videos. How many frames a request may hold, a frame's bytes and size, and whether the window holds a frame are the API's to judge.
 
@@ -267,7 +266,7 @@ The SDK checks every fixed rule the API documents before any network call, so th
 
 | Fault | Error | `error_type` |
 |---|---|---|
-| More than 128 objects and arrays inside each other; an unknown question type (on `systemone`, anything but truth, choice and score) | `BadRequestError`, "Invalid request." | `api_usage_error` |
+| More than 128 objects and arrays inside each other; an unknown question type | `BadRequestError`, "Invalid request." | `api_usage_error` |
 | A question that is not a Hash or has no `type`; instructions, a state, an option description, a score level or a truth side that is not a String, Hash or Array; a choice or score without criteria, or with criteria of the wrong shape; a score with no levels | `ValidationError` with the server's `entries` | null |
 | A number grid: a bound that is not a finite number, beyond 2^53, `step` not above 0, more than 6 decimals in `min` or `step`, beyond the decimal bound, `min` above `max`, more than 4,096 values (counted in exact decimals) | `ValidationError` with the server's `entries` | null |
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's documented message | null |
@@ -286,7 +285,7 @@ A bad argument raises Ruby's own `ArgumentError`, never a DecisionNode class: a 
 
 ### Checking without sending
 
-`check_request(method, request)` runs every check a call would run before sending, alone: it raises exactly what the call would raise (held `/v1/models` limits included) and returns `nil` when the request would be sent. It sends nothing and uploads nothing. `method` is `"decide"`, `"systemone"`, `"open_session"`, `"batches.create"` or `"batches.add"`; `request` holds the call's arguments, as a Hash or as keywords.
+`check_request(method, request)` runs every check a call would run before sending, alone: it raises exactly what the call would raise (held `/v1/models` limits included) and returns `nil` when the request would be sent. It sends nothing and uploads nothing. `method` is `"decide"`, `"open_session"`, `"batches.create"` or `"batches.add"`; `request` holds the call's arguments, as a Hash or as keywords.
 
 ```ruby
 dn.check_request("decide", state: ticket, questions: questions, images: images, videos: videos) # => nil
@@ -505,7 +504,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.9) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.10) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 

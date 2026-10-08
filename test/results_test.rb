@@ -126,13 +126,14 @@ class ResultsTest < Minitest::Test
     assert_equal({ "max_input_tokens" => 32_768 }, m.limits)
   end
 
-  STRICT = DecisionNode::TruthAnswer::STRICT_TYPE
+  # The API's older name for the truth type, which a raw question may still use.
+  OLD = "noul"
 
-  def test_the_strict_type_name_reads_as_truth
-    answer = DecisionNode::Answer.from({ "type" => STRICT, STRICT => 0.07 })
+  def test_the_older_type_name_reads_as_truth
+    answer = DecisionNode::Answer.from({ "type" => OLD, OLD => 0.07 })
     assert_instance_of DecisionNode::TruthAnswer, answer
     assert_in_delta 0.07, answer.truth
-    assert_instance_of DecisionNode::UnknownAnswer, DecisionNode::Answer.from({ "type" => STRICT, "truth" => 0.07 })
+    assert_instance_of DecisionNode::UnknownAnswer, DecisionNode::Answer.from({ "type" => OLD, "truth" => 0.07 })
   end
 
   def test_number_answer

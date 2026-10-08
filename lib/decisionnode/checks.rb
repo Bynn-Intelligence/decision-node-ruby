@@ -47,19 +47,15 @@ class DecisionNode
 
     module_function
 
-    def decide_types
-      ["truth", TruthAnswer::STRICT_TYPE, "choice", "score", "number", "point", "box"]
-    end
-
-    def systemone_types
-      [TruthAnswer::STRICT_TYPE, "choice", "score"]
-    end
+    # The question types the API takes, the older name of truth included,
+    # which a raw question may still use.
+    TRUTH_OLD_TYPE = "noul"
+    QUESTION_TYPES = ["truth", TRUTH_OLD_TYPE, "choice", "score", "number", "point", "box"].freeze
 
     # ---- requests
 
     # Checks a request body (String keys) for `/v1/decide` (profile :decide),
-    # `/v1/systemone` (:systemone), a session's opening (:session) or a batch
-    # line. A point or box question is checked against the ids of the body's
+    # a session's opening (:session) or a batch line. A point or box question is checked against the ids of the body's
     # `images`; a session's images come with its frames, so there they are
     # the server's to judge.
     def request!(body, profile: :decide, limits: {}, entries: [], counts: [])
@@ -69,7 +65,7 @@ class DecisionNode
       state = body["state"]
       entries.concat(sdl_entries(%w[body state], state)) unless state.nil? || sdl?(state)
       image_ids = profile == :session ? nil : Array(body["images"]).map { |img| img.is_a?(Hash) ? img["id"] || img[:id] : nil }
-      (body["questions"] || {}).each { |id, q| question(id, q, entries, deferred, profile, limits, image_ids) }
+      (body["questions"] || {}).each { |id, q| question(id, q, entries, deferred, limits, image_ids) }
       entries.concat(counts)
       raise invalid(entries) unless entries.empty?
       raise deferred.first unless deferred.empty?
@@ -415,7 +411,7 @@ class DecisionNode
 
     # ---- questions
 
-    def question(id, q, entries, deferred, profile, limits, image_ids)
+    def question(id, q, entries, deferred, limits, image_ids)
       base = ["body", "questions", id]
       unless q.is_a?(Hash)
         entries << entry("model_type", base, "Input should be a valid dictionary or object", q)
@@ -426,7 +422,7 @@ class DecisionNode
         return
       end
       type = q["type"]
-      unless (profile == :systemone ? systemone_types : decide_types).include?(type)
+      unless QUESTION_TYPES.include?(type)
         deferred << BadRequestError.new("Invalid request.", error_type: "api_usage_error",
                                                             reason: "question '#{id}': unknown type #{JSON.generate(type, max_nesting: false)}")
         return
@@ -437,7 +433,7 @@ class DecisionNode
       case type
       when "number" then number(id, q, loc, entries, deferred, limits)
       when "choice" then choice(id, q, loc, entries, deferred, limits)
-      when "score" then score(q, loc, entries, deferred, profile, limits)
+      when "score" then score(q, loc, entries, deferred, limits)
       when "point", "box" then place(id, q, loc, entries, deferred, image_ids)
       else truth(id, q, loc, entries, deferred)
       end
@@ -487,14 +483,14 @@ class DecisionNode
       end
     end
 
-    def score(q, loc, entries, deferred, profile, limits)
+    def score(q, loc, entries, deferred, limits)
       criteria = q["criteria"]
       most = limits["max_score_levels"] || MAX_SCORE_LEVELS
       if criteria.nil?
         entries << entry("missing", loc + ["criteria"], "Field required", q)
         return
       end
-      levels = score_levels(criteria, profile)
+      levels = score_levels(criteria)
       if levels.nil?
         entries << entry("list_type", loc + ["criteria"], "Input should be a valid list", criteria)
         return
@@ -507,10 +503,10 @@ class DecisionNode
       deferred << plain("Too many score levels. Must have at most #{most} levels.") if levels.size > most
     end
 
-    # The levels of a score: a list, or on /v1/decide an object keyed "0" to "K-1".
-    def score_levels(criteria, profile)
+    # The levels of a score: a list, or an object keyed "0" to "K-1".
+    def score_levels(criteria)
       return criteria if criteria.is_a?(Array)
-      return nil unless criteria.is_a?(Hash) && profile != :systemone
+      return nil unless criteria.is_a?(Hash)
 
       keyed = criteria.transform_keys(&:to_s)
       return nil unless keyed.keys.sort_by { |k| [k.length, k] } == Array.new(keyed.size) { |i| i.to_s }
@@ -531,7 +527,7 @@ class DecisionNode
       end
       return unless q["instructions"].nil? && sides["true"].nil? && sides["false"].nil?
 
-      name = q["type"] == TruthAnswer::STRICT_TYPE ? TruthAnswer::STRICT_TYPE.capitalize : "Truth"
+      name = q["type"] == TRUTH_OLD_TYPE ? TRUTH_OLD_TYPE.capitalize : "Truth"
       deferred << plain("#{name} question must have criteria or instructions: #{id}")
     end
 

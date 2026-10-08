@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 env:
-  # The commit of the conformance suite this gem is tested against (suite 1.9).
+  # The commit of the conformance suite this gem is tested against (suite 1.10).
   # Change it here, and only here, to move to a newer suite.
-  CONFORMANCE_REF: 797cc053e340ccc78a85c5a38fb6c9170f18e065
+  CONFORMANCE_REF: bc70755015a4de3dc5e5014611e8d1dd2d97c362
 
 jobs:
   test:

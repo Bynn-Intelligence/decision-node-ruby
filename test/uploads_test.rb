@@ -39,7 +39,7 @@ class UploadsTest < Minitest::Test
       elsif method == "PUT"
         @stored[url] = body
         @put.call(call, calls_to("PUT").size)
-      elsif path == "/v1/decide" || path == "/v1/systemone"
+      elsif path == "/v1/decide"
         @decide.call(call, calls_to("POST", path).size)
       else
         FakeHTTP.json(404, { "detail" => "no route" })

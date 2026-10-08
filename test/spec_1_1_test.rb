@@ -2,8 +2,7 @@
 
 require_relative "test_helper"
 
-# Number questions, truth under its /v1/systemone name, local request
-# checks, sessions and the Batch API.
+# Number questions, local request checks, sessions and the Batch API.
 class Spec11Test < Minitest::Test
   include ClientHelpers
 
@@ -19,21 +18,6 @@ class Spec11Test < Minitest::Test
     assert_equal({ "3" => 0.2, "3.5" => 0.611, "4" => 0.18 }, result.probabilities)
     assert_equal({ "number" => { "type" => "number", "instructions" => "Rating?", "min" => 0, "max" => 5, "step" => 0.5 } },
                  http.calls.first.json["questions"])
-  end
-
-  # ---- truth
-
-  STRICT = DecisionNode::TruthAnswer::STRICT_TYPE
-
-  def test_systemone_sends_truth_under_its_wire_name_and_always_a_model
-    http = FakeHTTP.new(FakeHTTP.json(200, { "answers" => { "t" => { "type" => STRICT, STRICT => 0.9 } } }))
-    d = client(http).systemone(state: "s", questions: { t: DecisionNode.truth("Escalate?"), c: DecisionNode.choice("?", %w[a b]) })
-    call = http.calls.first
-    assert_equal "https://api.example.test/v1/systemone", call.url
-    assert_equal "decisionnode-latest", call.json["model"]
-    assert_equal STRICT, call.json.dig("questions", "t", "type")
-    assert_equal "choice", call.json.dig("questions", "c", "type")
-    assert_in_delta 0.9, d["t"].truth
   end
 
   # ---- local checks
@@ -53,7 +37,7 @@ class Spec11Test < Minitest::Test
     assert_refused_locally(DecisionNode::BadRequestError, { "q" => DecisionNode.score("?", (0..10).map(&:to_s)) })
     assert_refused_locally(DecisionNode::ValidationError, { "q" => DecisionNode.score("?", []) })
     assert_refused_locally(DecisionNode::BadRequestError, { "q" => DecisionNode.truth })
-    assert_refused_locally(DecisionNode::BadRequestError, { "q" => { "type" => STRICT } })
+    assert_refused_locally(DecisionNode::BadRequestError, { "q" => { "type" => "noul" } })
     assert_refused_locally(DecisionNode::BadRequestError, { "q" => DecisionNode.number(nil, min: 0, max: 10) })
     error = assert_refused_locally(DecisionNode::ValidationError, { "q" => DecisionNode.number("%", min: 0, max: 1000, step: 0.1) })
     assert_equal "too_long", error.entries.first["type"]

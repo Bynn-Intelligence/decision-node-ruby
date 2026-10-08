@@ -71,7 +71,7 @@ class VideoTest < Minitest::Test
                  http.calls.first.json["videos"]
   end
 
-  def test_videos_in_systemone_helpers_and_batch_lines
+  def test_videos_in_helpers_batch_lines_and_checks
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body(id: "check")))
     dn = client(http)
     video = DecisionNode::Video.new("cam", frames: frames(0))
@@ -79,7 +79,7 @@ class VideoTest < Minitest::Test
     assert_equal "cam", http.calls.last.json["videos"][0]["id"]
     line = dn.send(:batch_line, { custom_id: "a", questions: { "q" => DecisionNode.truth("?") }, videos: [video] }, 0)
     assert_equal "cam", JSON.parse(line)["videos"][0]["id"]
-    assert_nil dn.check_request("systemone", state: "s", questions: { "q" => DecisionNode.truth("?") }, videos: [video])
+    assert_nil dn.check_request("decide", state: "s", questions: { "q" => DecisionNode.truth("?") }, videos: [video])
   end
 
   def test_local_checks_in_the_api_order_and_words

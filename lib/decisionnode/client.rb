@@ -128,14 +128,6 @@ class DecisionNode
     decision_call("/v1/decide", state, questions, images, videos, model).first
   end
 
-  # Sends one request to `POST /v1/systemone`, the strict path, and returns a
-  # Decision. It takes `truth`, `choice` and `score` questions; a truth question
-  # is sent with the type name that path takes, and read back as a TruthAnswer.
-  # The model is always sent.
-  def systemone(state: UNSET, questions: nil, images: nil, videos: nil, model: nil)
-    decision_call("/v1/systemone", state, questions, images, videos, model, strict: true).first
-  end
-
   # Runs several #decide calls, at most `concurrency` at a time. Each request is
   # a Hash of #decide's arguments. Returns one entry per request, in input
   # order: a Decision, or the error that request ended with. One failure does
@@ -249,7 +241,7 @@ class DecisionNode
     Session.new(self, raw)
   end
 
-  CHECKED_CALLS = %w[decide systemone open_session batches.create batches.add].freeze
+  CHECKED_CALLS = %w[decide open_session batches.create batches.add].freeze
 
   # Runs every local check a call would run before sending, alone: it raises
   # exactly what the call would raise for this request (held /v1/models limits
@@ -259,8 +251,8 @@ class DecisionNode
   #   dn.check_request("decide", state: "...", questions: { q: DecisionNode.truth("?") })
   #   dn.check_request(:open_session, { questions: questions, window: 128 }) # raises ValidationError
   #
-  # method:: "decide", "systemone", "open_session", "batches.create" or
-  #          "batches.add" (a String or Symbol).
+  # method:: "decide", "open_session", "batches.create" or "batches.add" (a
+  #          String or Symbol).
   # request:: the call's keyword arguments, as a Hash or as keywords. For
   #          the batch calls, `requests:`; a `batch_id:` plays no part.
   # Frames are checked with Session#check_frame.
@@ -271,11 +263,11 @@ class DecisionNode
 
     kw = (request || {}).merge(args).to_h { |k, v| [k.to_sym, v] }
     case name
-    when "decide", "systemone"
+    when "decide"
       unknown = kw.keys - DECIDE_ARGS
       raise ArgumentError, "unknown argument(s) #{unknown.join(', ')} for #{name}" unless unknown.empty?
 
-      prepared_call(**kw, strict: name == "systemone")
+      prepared_call(**kw)
     when "open_session"
       body = open_body(**kw)
       Checks.session_open!(body, limits: limits_for(body["model"]))
@@ -511,12 +503,12 @@ class DecisionNode
   # Every fixed rule of a request before it is sent: the body (its images and
   # videos as placeholders, so the nesting counts them) with the counts of
   # its images and videos, then the images, then the videos.
-  def check_body(body, images, videos = [], profile: :decide)
+  def check_body(body, images, videos = [])
     probe = body
     probe = probe.merge("images" => images.map { |img| { "id" => image_id(img) } }) unless images.empty?
     probe = probe.merge("videos" => Array.new(videos.size) { { "id" => "", "frames" => [{}] } }) unless videos.empty?
     limits = limits_for(body["model"])
-    Checks.request!(probe, profile: profile, limits: limits, counts: Checks.count_entries(images, videos, limits: limits))
+    Checks.request!(probe, limits: limits, counts: Checks.count_entries(images, videos, limits: limits))
     Checks.images!(images, limits: limits)
     Checks.videos!(videos, image_ids: images.map { |img| image_id(img) })
   end
@@ -558,14 +550,13 @@ class DecisionNode
 
   # Checks a request and keeps what is needed to send it. A request without
   # local images is encoded once here.
-  def prepared_call(state: UNSET, questions: nil, images: nil, videos: nil, model: nil, strict: false)
+  def prepared_call(state: UNSET, questions: nil, images: nil, videos: nil, model: nil)
     qs = prepared_questions(questions)
-    qs = strict_questions(qs) if strict
     imgs = prepared_images(images)
     vids = prepared_videos(videos)
     state = state.equal?(UNSET) || state.nil? ? "" : state
     model = given(model) || @model
-    check_body(body_for(model, state, qs, nil), imgs, vids, profile: strict ? :systemone : :decide)
+    check_body(body_for(model, state, qs, nil), imgs, vids)
     wired = video_wires(vids)
     if imgs.any? { |img| img.is_a?(Image) && img.local? }
       encode(body_for(model, state, qs, nil, wired)) # a value that cannot be serialised fails here
@@ -583,14 +574,9 @@ class DecisionNode
     body
   end
 
-  def decision_call(path, state, questions, images, videos, model, strict: false)
-    call = prepared_call(state: state, questions: questions, images: images, videos: videos, model: model, strict: strict)
+  def decision_call(path, state, questions, images, videos, model)
+    call = prepared_call(state: state, questions: questions, images: images, videos: videos, model: model)
     send_prepared(path, call)
-  end
-
-  # /v1/systemone takes the truth type under its own wire name.
-  def strict_questions(questions)
-    questions.transform_values { |q| q["type"] == "truth" ? q.merge("type" => TruthAnswer::STRICT_TYPE) : q }
   end
 
   # Sends a prepared request; returns the Decision and the HTTP status. A
