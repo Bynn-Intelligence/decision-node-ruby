@@ -8,6 +8,7 @@
 # points, the tests fail. They are never skipped.
 
 require "minitest/autorun"
+require "digest"
 require "json"
 require "net/http"
 require "securerandom"
@@ -18,6 +19,7 @@ module Conformance
   KINDS = %w[requests responses errors behaviour constants].freeze
   ENV_VARS = %w[DECISIONNODE_API_KEY DECISIONNODE_BASE_URL DECISIONNODE_MODEL].freeze
   EXACT = %w[probabilities legend raw entries safety body limits].freeze
+  READ_TIMEOUT_MS = 10_000
 
   class Fail < StandardError; end
 
@@ -60,11 +62,20 @@ module Conformance
     nil
   end
 
+  # The recorded requests of a session, without pongs, and the pong count.
   def mock_log(session, path: nil)
     query = { "session" => session }
     query["path"] = path if path
     uri = URI("#{mock_url}/_mock/requests?#{URI.encode_www_form(query)}")
-    JSON.parse(Net::HTTP.get(uri))
+    out = JSON.parse(Net::HTTP.get(uri))
+    out["pongs"] = out["requests"].count { |r| r["method"] == "PONG" }
+    out["requests"] = out["requests"].reject { |r| r["method"] == "PONG" }
+    out
+  end
+
+  def mock_clock(session, body)
+    uri = URI("#{mock_url}/_mock/clock?#{URI.encode_www_form('session' => session)}")
+    Net::HTTP.post(uri, JSON.generate(body), "Content-Type" => "application/json")
   end
 
   # ---- comparison
@@ -140,10 +151,18 @@ module Conformance
 
   class OrderedKeys < Hash; end
 
+  def in_range!(range, value, what)
+    raise Fail, format("%s %.0f is below %s", what, value, range["min"]) if range.key?("min") && value < range["min"]
+    raise Fail, format("%s %.0f is above %s", what, value, range["max"]) if range.key?("max") && value > range["max"]
+  end
+
   # ---- normalisation into the neutral shapes the cases use
 
   def norm_answer(answer)
     case answer
+    when DecisionNode::NumberAnswer
+      { "kind" => "number", "number" => answer.number, "expected" => answer.expected,
+        "confidence" => answer.confidence, "probabilities" => answer.probabilities }
     when DecisionNode::TruthAnswer
       { "kind" => "truth", "truth" => answer.truth }
     when DecisionNode::ChoiceAnswer
@@ -160,12 +179,16 @@ module Conformance
     end
   end
 
+  def norm_usage(usage)
+    usage && { "input_tokens" => usage.input_tokens, "output_tokens" => usage.output_tokens }
+  end
+
   def norm_decision(decision)
     {
       "model" => decision.model,
       "request_id" => decision.request_id,
       "latency_ms" => decision.latency_ms,
-      "usage" => { "input_tokens" => decision.usage.input_tokens, "output_tokens" => decision.usage.output_tokens },
+      "usage" => norm_usage(decision.usage),
       "safety" => decision.safety&.to_h,
       "answers" => decision.answers.transform_values { |a| norm_answer(a) },
       "raw" => decision.raw
@@ -188,58 +211,177 @@ module Conformance
     }
   end
 
+  def norm_session(session)
+    session.raw.merge("answers" => session.answers.transform_values { |a| norm_answer(a) })
+  end
+
+  def norm_batch_result(result)
+    out = { "custom_id" => result.custom_id, "status" => result.status, "headers" => result.headers }
+    out["decision"] = norm_decision(result.decision) if result.decision
+    out["error"] = result.error if result.error
+    out
+  end
+
+  def norm_event(event)
+    case event
+    when DecisionNode::Reply
+      out = { "seq" => event.seq, "answers" => event.answers.transform_values { |a| norm_answer(a) },
+              "usage" => norm_usage(event.usage), "latency_ms" => event.latency_ms, "safety" => event.safety }
+      out["dropped"] = event.dropped unless event.dropped.nil?
+      { "reply" => out }
+    when DecisionNode::FrameError
+      out = { "seq" => event.seq, "error_type" => event.error_type, "message" => event.message }
+      out["category"] = event.category unless event.category.nil?
+      out["retry_after_ms"] = event.retry_after_ms unless event.retry_after_ms.nil?
+      out["usage"] = norm_usage(event.usage) unless event.usage.nil?
+      out["safety"] = event.safety unless event.safety.nil?
+      { "frame_error" => out }
+    when DecisionNode::SessionClosed
+      { "closed" => { "code" => event.code, "reopen" => event.reopen } }
+    else
+      raise Fail, "unknown session event #{event.inspect}"
+    end
+  end
+
   def check_error!(spec, err, path)
     cls = spec["error"] || spec["class"]
     names = err.class.ancestors.map { |c| c.name.to_s.split("::").last }
     if spec["subclass_ok"]
       raise Fail, "#{path}: expected #{cls} or a subclass, got #{err.class}" unless names.include?(cls)
     elsif err.class.name.split("::").last != cls
-      raise Fail, "#{path}: expected #{cls}, got #{err.class} (#{err})"
+      raise Fail, "#{path}: expected #{cls}, got #{err.class} (#{err.message})"
     end
     match!(spec["fields"] || {}, norm_error(err), "#{path}.fields")
   end
 
+  def check_batch_results!(expected, results, path)
+    results = results.to_a
+    raise Fail, "#{path}: expected #{expected.size} results, got #{results.size}" unless results.size == expected.size
+
+    expected.zip(results).each_with_index do |(spec, res), i|
+      got = norm_batch_result(res)
+      where = "#{path}[#{i}]"
+      %w[custom_id status headers].each do |key|
+        next unless spec.key?(key)
+
+        if key == "headers"
+          match!(spec[key], got[key], "#{where}.headers")
+        elsif !same?(spec[key], got[key])
+          raise Fail, "#{where}.#{key}: expected #{short(spec[key])}, got #{short(got[key])}"
+        end
+      end
+      if spec.key?("decision")
+        raise Fail, "#{where}: expected a decision, got none" unless got.key?("decision")
+
+        match!(spec["decision"], got["decision"], "#{where}.decision")
+      end
+      if spec.key?("error")
+        raise Fail, "#{where}: expected an error value, got none" unless got.key?("error")
+
+        check_error!(spec["error"], got["error"], "#{where}.error")
+      end
+      raise Fail, "#{where}: expected no decision" if spec["no_decision"] && got.key?("decision")
+    end
+  end
+
   # ---- calls
 
-  def decode(value)
+  def image_bytes(args)
+    data = args.key?("path") ? File.binread(File.join(ROOT, args["path"])) : args["data_base64"].unpack1("m")
+    # The image's own bytes followed by zero bytes: the header is unchanged.
+    data += "\0".b * [0, args["pad_to"] - data.bytesize].max if args.key?("pad_to")
+    data
+  end
+
+  def decode(value, ctx = {})
     if value.is_a?(Hash) && value.size == 1
       key, args = value.first
       case key
+      when "$ref" then return resolve_ref(args, ctx)
+      when "$text" then return args["repeat"] * args["times"]
       when "$truth" then return DecisionNode.truth(args["instructions"], if_true: args["true"], if_false: args["false"])
       when "$choice" then return DecisionNode.choice(args["instructions"], args["options"])
       when "$score" then return DecisionNode.score(args["instructions"], args["levels"])
-      when "$image"
-        return DecisionNode::Image.new(args["id"], path: File.join(ROOT, args["path"])) if args.key?("path")
-        return DecisionNode::Image.new(args["id"], url: args["url"]) if args.key?("url")
-
-        return DecisionNode::Image.new(args["id"], data: args["data_base64"].unpack1("m"),
-                                                   media_type: args["media_type"])
+      when "$number"
+        return DecisionNode.number(args["instructions"], min: args["min"], max: args["max"], step: args["step"])
+      when "$image" then return image(args.transform_values { |v| decode(v, ctx) })
       end
     end
     case value
-    when Hash then value.transform_values { |v| decode(v) }
-    when Array then value.map { |v| decode(v) }
+    when Hash then value.transform_values { |v| decode(v, ctx) }
+    when Array then value.map { |v| decode(v, ctx) }
     else value
     end
   end
 
-  def invoke(client, call)
-    method = call["method"]
-    args = call["args"] || {}
-    case method
-    when "decide_raw" then client.decide_raw(args["body"])
-    when "models" then client.models
-    when "decide_many"
-      kw = {}
-      kw[:concurrency] = args["concurrency"] if args.key?("concurrency")
-      client.decide_many(decode(args["requests"]), **kw)
-    else
-      kw = args.to_h do |k, v|
-        name = { "true" => :if_true, "false" => :if_false }.fetch(k, k.to_sym)
-        [name, decode(v)]
-      end
-      client.public_send(method, **kw)
+  def image(args)
+    id = args["id"]
+    type = args["media_type"]
+    return DecisionNode::Image.new(id, url: args["url"], media_type: type) if args.key?("url")
+    return DecisionNode::Image.new(id, upload_id: args["upload_id"], media_type: type) if args.key?("upload_id")
+    if args.key?("path") && !args.key?("pad_to")
+      return DecisionNode::Image.new(id, path: File.join(ROOT, args["path"]), media_type: type)
     end
+
+    # Without media_type the client is given the bytes alone and detects the format.
+    DecisionNode::Image.new(id, data: image_bytes(args), media_type: type)
+  end
+
+  def resolve_ref(path, ctx)
+    name, rest = path.split(".", 2)
+    (rest ? rest.split(".") : []).reduce(ctx.fetch(name)) do |cur, part|
+      case cur
+      when Hash then cur[part]
+      when Array then cur[Integer(part)]
+      else cur.public_send(part)
+      end
+    end
+  end
+
+  def kwargs(hash)
+    hash.to_h { |k, v| [{ "true" => :if_true, "false" => :if_false }.fetch(k, k.to_sym), v] }
+  end
+
+  def invoke(client, call, ctx = {})
+    method = call["method"]
+    raw_args = call["args"] || {}
+    return client.decide_raw(raw_args["body"]) if method == "decide_raw"
+
+    args = raw_args.transform_values { |v| decode(v, ctx) }
+    case method
+    when "models" then client.models
+    when "upload" then client.upload(args["images"])
+    when "decide_many"
+      kw = args.key?("concurrency") ? { concurrency: args["concurrency"] } : {}
+      client.decide_many(args["requests"], **kw)
+    when "run_batch" then client.run_batch(args["requests"], **kwargs(args.except("requests")))
+    when "supervise" then supervise(client, args)
+    when /\Abatches\.(.+)\z/ then batches(client.batches, Regexp.last_match(1), args)
+    else client.public_send(method, **kwargs(args))
+    end
+  end
+
+  def batches(api, name, args)
+    case name
+    when "create" then api.create(args.fetch("requests", []))
+    when "add" then api.add(args["batch_id"], args["requests"])
+    when "list" then api.list(**kwargs(args))
+    else api.public_send(name, args["batch_id"])
+    end
+  end
+
+  def supervise(client, args)
+    replies = []
+    interval = args.fetch("feed_interval_ms", 0) / 1000.0
+    readings = args["feed"]
+    feed = Enumerator.new do |y|
+      readings.each_with_index do |reading, i|
+        sleep(interval) if i.positive?
+        y << reading
+      end
+    end
+    closed = client.supervise(args["body"], feed, ->(event) { replies << event })
+    { "supervised" => true, "replies" => replies, "closed" => closed }
   end
 
   # Replaces the client's wait between attempts with a recorder that returns at once.
@@ -265,7 +407,9 @@ module Conformance
         headers.each { |k, v| req[k] = v }
         req.body = body if body
         res = http.request(req)
-        return DecisionNode::HTTPResponse.new(res.code.to_i, res.to_hash.transform_values { |v| v.join(", ") }, res.body.to_s) unless res.is_a?(Net::HTTPRedirection)
+        unless res.is_a?(Net::HTTPRedirection)
+          return DecisionNode::HTTPResponse.new(res.code.to_i, res.to_hash.transform_values { |v| v.join(", ") }, res.body.to_s)
+        end
 
         uri = URI.join(uri.to_s, res["location"])
       end
@@ -277,7 +421,7 @@ module Conformance
     (case_["env"] || {}).each { |k, v| ENV[k] = fill(v) }
     spec = case_["client"] || {}
     kw = {}
-    %w[api_key model timeout max_retries].each { |k| kw[k.to_sym] = spec[k] unless spec[k].nil? }
+    %w[api_key model timeout max_retries inline_threshold].each { |k| kw[k.to_sym] = spec[k] unless spec[k].nil? }
     if spec.key?("base_url")
       kw[:base_url] = fill(spec["base_url"]) unless spec["base_url"].nil?
     else
@@ -288,56 +432,155 @@ module Conformance
     DecisionNode.new(**kw)
   end
 
-  # ---- the four kinds
+  # ---- requests
 
   def run_requests(case_)
     session = SecureRandom.hex(16)
-    invoke(make_client(case_, "x-mock-session" => session), case_["call"])
+    extra = { "x-mock-session" => session }
+    extra["x-mock-scenario"] = "request/#{case_['id']}" if case_["mock"]
+    invoke(make_client(case_, extra), case_["call"])
+    sleep 0.02
     log = mock_log(session)["requests"]
-    raise Fail, "expected 1 request, the mock received #{log.size}" unless log.size == 1
+    exp = case_["expect"]
+    if exp.key?("request")
+      raise Fail, "expected 1 request, the mock received #{log.size}" unless log.size == 1
 
-    got = log.first
-    exp = case_["expect"]["request"]
-    raise Fail, "method: expected #{exp['method']}, got #{got['method']}" unless got["method"] == exp["method"]
-    raise Fail, "path: expected #{exp['path']}, got #{got['path']}" unless got["path"] == exp["path"]
+      check_request!(exp["request"], log.first, "request")
+    else
+      check_request_list!(exp["requests"], log)
+    end
+  end
 
+  def describe(log)
+    log.map { |r| "#{r['method']} #{r['path']}" }
+  end
+
+  def check_request_list!(expected, log)
+    raise Fail, "expected #{expected.size} requests, the mock received #{log.size}: #{describe(log)}" unless log.size == expected.size
+
+    i = 0
+    while i < expected.size
+      unless expected[i]["parallel"]
+        check_request!(expected[i], log[i], "requests[#{i}]")
+        i += 1
+        next
+      end
+      j = i
+      j += 1 while j < expected.size && expected[j]["parallel"]
+      # Requests sent in parallel may arrive in any order: one assignment must hold.
+      reasons = []
+      ok = (i...j).to_a.permutation.any? do |perm|
+        (i...j).zip(perm).each { |k, g| check_request!(expected[k], log[g], "requests[#{k}]") }
+        true
+      rescue Fail => e
+        reasons << e.message
+        false
+      end
+      raise Fail, "no order of the parallel requests matches: #{reasons.first}" unless ok
+
+      i = j
+    end
+  end
+
+  def parse_jsonl(text)
+    stripped = text.to_s.strip
+    return [] if stripped.empty?
+    return JSON.parse(stripped) if stripped.start_with?("[")
+
+    text.split("\n").reject { |l| l.strip.empty? }.map { |l| JSON.parse(l) }
+  end
+
+  def check_request!(exp, got, where)
+    raise Fail, "#{where} method: expected #{exp['method']}, got #{got['method']} #{got['path']}" unless got["method"] == exp["method"]
+    raise Fail, "#{where} path: expected #{exp['path']}, got #{got['path']}" if exp.key?("path") && got["path"] != exp["path"]
+    if exp.key?("path_pattern") && !got["path"].match?(Regexp.new(exp["path_pattern"]))
+      raise Fail, "#{where} path: #{got['path']} does not match #{exp['path_pattern']}"
+    end
+    if exp.key?("query")
+      query = URI.decode_www_form(got["query"].to_s).each_with_object({}) { |(k, v), h| h[k] ||= v }
+      raise Fail, "#{where} query: expected #{exp['query']}, got #{query}" unless query == exp["query"]
+    end
+    if exp.key?("status") && got["status"] != exp["status"]
+      raise Fail, "#{where} status: the mock answered #{got['status']}, expected #{exp['status']}"
+    end
     headers = got["headers"]
     (exp["headers"] || {}).each do |name, value|
       actual = headers[name.downcase]
-      raise Fail, "header #{name}: expected #{value.inspect}, got #{actual.inspect}" unless actual == value
+      raise Fail, "#{where} header #{name}: expected #{value.inspect}, got #{actual.inspect}" unless actual == value
     end
     (exp["header_patterns"] || {}).each do |name, pattern|
       actual = headers[name.downcase]
-      raise Fail, "header #{name}: #{actual.inspect} does not match #{pattern}" unless actual&.match?(Regexp.new(pattern))
+      raise Fail, "#{where} header #{name}: #{actual.inspect} does not match #{pattern}" unless actual&.match?(Regexp.new(pattern))
     end
     (exp["absent_headers"] || []).each do |name|
-      raise Fail, "header #{name} must not be sent" if headers.key?(name.downcase)
+      raise Fail, "#{where} header #{name} must not be sent" if headers.key?(name.downcase)
+    end
+    if exp.key?("body_base64")
+      raise Fail, "#{where} body: the bytes differ" unless got["body_base64"] == exp["body_base64"]
+
+      return
+    end
+    if exp.key?("body_sha256")
+      digest = Digest::SHA256.hexdigest(got["body_base64"].to_s.unpack1("m"))
+      raise Fail, "#{where} body: sha256 #{digest}, expected #{exp['body_sha256']}" unless digest == exp["body_sha256"]
+
+      return
+    end
+    if exp.key?("jsonl")
+      lines = parse_jsonl(got["body_text"])
+      raise Fail, "#{where} body lines: expected #{short(exp['jsonl'])}, got #{short(lines)}" unless same?(exp["jsonl"], lines)
+
+      return
+    end
+    if exp.key?("jsonl_count") || exp.key?("jsonl_checks")
+      lines = parse_jsonl(got["body_text"])
+      if exp.key?("jsonl_count") && lines.size != exp["jsonl_count"]
+        raise Fail, "#{where} body: expected #{exp['jsonl_count']} lines, got #{lines.size}"
+      end
+      (exp["jsonl_checks"] || []).each do |check|
+        raise Fail, "#{where} body: no line #{check['line']}" if check["line"] >= lines.size
+
+        check_value!(check, lines[check["line"]], "#{where} line #{check['line']}")
+      end
+      return
     end
     text = got["body_text"].to_s
     body = text.empty? ? nil : JSON.parse(text)
     if exp.key?("body")
-      raise Fail, "body: expected #{short(exp['body'])}, got #{short(body)}" unless same?(exp["body"], body)
-    elsif !exp.key?("body_checks") && !text.empty?
-      raise Fail, "expected no body, got #{short(text)}"
+      raise Fail, "#{where} body: expected #{short(exp['body'])}, got #{short(body)}" unless same?(exp["body"], body)
+    elsif !exp.key?("body_checks") && !text.empty? && !exp["any_body"]
+      raise Fail, "#{where} expected no body, got #{short(text)}"
     end
-    (exp["body_checks"] || []).each do |check|
-      ptr = check["pointer"]
-      found, val = pointer(body, ptr)
-      raise Fail, "body#{ptr}: missing" unless found
-      if check.key?("equals") && !same?(check["equals"], val)
-        raise Fail, "body#{ptr}: expected #{short(check['equals'])}, got #{short(val)}"
-      end
-      raise Fail, "body#{ptr}: expected a #{check['type']}" if check.key?("type") && !JSON_TYPES.fetch(check["type"]).(val)
-      if check.key?("keys") && (!val.is_a?(Hash) || val.keys != check["keys"])
-        raise Fail, "body#{ptr}: keys expected #{check['keys']}, got #{val.is_a?(Hash) ? val.keys : val.inspect}"
-      end
-    end
+    (exp["body_checks"] || []).each { |check| check_value!(check, body, where) }
     (exp["ordered_keys"] || []).each do |ptr|
       _, want = pointer(exp["body"], ptr)
       order = ordered_keys_of(text, ptr)
-      raise Fail, "body#{ptr}: key order expected #{want.keys}, got #{order}" unless order == want.keys
+      raise Fail, "#{where} body#{ptr}: key order expected #{want.keys}, got #{order}" unless order == want.keys
     end
   end
+
+  def check_value!(check, body, where)
+    ptr = check["pointer"]
+    found, val = pointer(body, ptr)
+    if check["absent"]
+      raise Fail, "#{where} body#{ptr}: must be absent, got #{short(val)}" if found
+
+      return
+    end
+    raise Fail, "#{where} body#{ptr}: missing" unless found
+    if check.key?("equals") && !same?(check["equals"], val)
+      raise Fail, "#{where} body#{ptr}: expected #{short(check['equals'])}, got #{short(val)}"
+    end
+    raise Fail, "#{where} body#{ptr}: expected a #{check['type']}" if check.key?("type") && !JSON_TYPES.fetch(check["type"]).(val)
+    if check.key?("pattern") && !(val.is_a?(String) && val.match?(Regexp.new(check["pattern"])))
+      raise Fail, "#{where} body#{ptr}: #{short(val)} does not match #{check['pattern']}"
+    end
+    return unless check.key?("keys") && (!val.is_a?(Hash) || val.keys != check["keys"])
+
+    raise Fail, "#{where} body#{ptr}: keys expected #{check['keys']}, got #{val.is_a?(Hash) ? val.keys : val.inspect}"
+  end
+
+  # ---- responses
 
   def run_responses(case_)
     session = SecureRandom.hex(16)
@@ -358,23 +601,37 @@ module Conformance
       raise Fail, "models: expected #{short(exp['models'])}, got #{short(got)}" unless same?(exp["models"], got)
     elsif exp.key?("raw")
       raise Fail, "raw: expected #{short(exp['raw'])}, got #{short(result)}" unless same?(exp["raw"], result)
+    elsif exp.key?("batch")
+      raise Fail, "batch: expected a Batch, got #{result.class}" unless result.is_a?(DecisionNode::Batch)
+
+      match!(exp["batch"], result.to_h, "batch")
+    elsif exp.key?("batch_page")
+      raise Fail, "batch_page: expected a BatchPage, got #{result.class}" unless result.is_a?(DecisionNode::BatchPage)
+
+      match!(exp["batch_page"], result.to_h, "batch_page")
+    elsif exp.key?("batch_results")
+      check_batch_results!(exp["batch_results"], result, "batch_results")
+    elsif exp.key?("session")
+      match!(exp["session"], norm_session(result), "session")
+    elsif exp.key?("upload_ids")
+      raise Fail, "upload_ids: expected #{exp['upload_ids']}, got #{result}" unless same?(exp["upload_ids"], result.to_a)
     end
   end
+
+  # ---- errors
 
   def run_errors(case_)
     session = SecureRandom.hex(16)
     client = make_client(case_, "x-mock-session" => session, "x-mock-scenario" => "error/#{case_['id']}")
     spec = case_["expect"]["error"]
-    # Caught through the exported name the case gives (catch_as), else the base class.
-    catch_as = spec["catch_as"]
-    unless catch_as.nil? || DecisionNode.const_defined?(catch_as, false)
-      raise Fail, "DecisionNode::#{catch_as} is not defined"
+    # catch_as is always the exported base name; the rescue below is written against it.
+    if spec["catch_as"] && spec["catch_as"] != "DecisionNodeError"
+      raise Fail, "catch_as #{spec['catch_as']} is not the base error's name"
     end
 
-    rescue_class = DecisionNode.const_get(catch_as || "DecisionNodeError", false)
     begin
       invoke(client, case_["call"])
-    rescue rescue_class => e
+    rescue DecisionNode::DecisionNodeError => e
       check_error!(spec, e, "error")
     else
       raise Fail, "no error was raised"
@@ -383,13 +640,23 @@ module Conformance
     raise Fail, "expected 1 attempt with max_retries 0, got #{log.size}" unless log.size == 1
   end
 
+  # ---- behaviour
+
   def check_outcome!(spec, result, path)
+    if result.is_a?(DecisionNode::SessionClosed) && !spec.key?("closed")
+      raise Fail, "#{path}: the call raised SessionClosed(#{result.code})"
+    end
     if spec["argument_error"]
       raise Fail, "#{path}: expected an ArgumentError, got #{result.class}: #{result}" unless result.is_a?(ArgumentError)
-    elsif spec.key?("result")
-      raise Fail, "#{path}: expected a decision, got #{result.class}: #{result}" if result.is_a?(Exception)
 
-      match!(spec["decision"], norm_decision(result), "#{path}.decision") if spec.key?("decision")
+      return
+    end
+    raise Fail, "#{path}: unexpected argument error: #{result.message}" if result.is_a?(ArgumentError)
+
+    if spec.key?("result")
+      raise Fail, "#{path}: expected #{spec['result']}, got #{result.class}: #{result.message}" if result.is_a?(Exception)
+
+      check_result!(spec, result, path)
     else
       raise Fail, "#{path}: expected #{spec['error']}, got a result" unless result.is_a?(DecisionNode::DecisionNodeError)
 
@@ -397,9 +664,164 @@ module Conformance
     end
   end
 
-  def in_range!(range, value, what)
-    raise Fail, format("%s %.0f is below %s", what, value, range["min"]) if range.key?("min") && value < range["min"]
-    raise Fail, format("%s %.0f is above %s", what, value, range["max"]) if range.key?("max") && value > range["max"]
+  def check_result!(spec, result, path)
+    case spec["result"]
+    when "decision"
+      raise Fail, "#{path}: expected a Decision, got #{result.class}" unless result.is_a?(DecisionNode::Decision)
+
+      match!(spec["decision"], norm_decision(result), "#{path}.decision") if spec.key?("decision")
+    when "answer" then match!(spec.fetch("answer", {}), norm_answer(result), "#{path}.answer")
+    when "batch"
+      raise Fail, "#{path}: expected a Batch, got #{result.class}" unless result.is_a?(DecisionNode::Batch)
+
+      match!(spec.fetch("batch", {}), result.to_h, "#{path}.batch")
+    when "batch_page" then match!(spec.fetch("batch_page", {}), result.to_h, "#{path}.batch_page")
+    when "batch_results" then check_batch_results!(spec["batch_results"], result, "#{path}.batch_results")
+    when "batch_run"
+      batch, results = result
+      match!(spec.fetch("batch", {}), batch.to_h, "#{path}.batch")
+      check_batch_results!(spec["batch_results"], results, "#{path}.batch_results") if spec.key?("batch_results")
+    when "session"
+      raise Fail, "#{path}: expected a Session, got #{result.class}" unless result.is_a?(DecisionNode::Session)
+
+      match!(spec.fetch("session", {}), norm_session(result), "#{path}.session")
+    when "upload_ids"
+      unless result.is_a?(Array) && result.size == spec.fetch("count", result.size)
+        raise Fail, "#{path}: expected #{spec['count']} upload ids, got #{result.inspect}"
+      end
+      result.each { |id| raise Fail, "#{path}: #{id.inspect} is not an upload id" unless id.to_s.match?(/\Aupl_[0-9a-f]{32}\z/) }
+      if !spec["distinct"].nil? && (result.uniq.size == result.size) != spec["distinct"]
+        raise Fail, "#{path}: upload ids #{result}"
+      end
+    when "supervised"
+      raise Fail, "#{path}: expected supervise to return" unless result.is_a?(Hash) && result["supervised"]
+
+      replies = result["replies"].count { |e| e.is_a?(DecisionNode::Reply) }
+      in_range!(spec.fetch("replies", {}), replies, "replies")
+      if spec.key?("closed")
+        closed = result["closed"]
+        got = closed && { "code" => closed.code, "reopen" => closed.reopen }
+        raise Fail, "#{path}.closed: expected #{spec['closed']}, got #{got.inspect}" unless same?(spec["closed"], got)
+      end
+    else
+      raise Fail, "#{path}: unknown result kind #{spec['result']}"
+    end
+  end
+
+  STEP_ERRORS = [DecisionNode::DecisionNodeError, ArgumentError, DecisionNode::SessionClosed].freeze
+
+  def run_steps(case_, client, session, events)
+    ctx = {}
+    case_["steps"].each_with_index do |step, i|
+      where = "steps[#{i}]"
+      if step.key?("call")
+        result = begin
+          invoke(client, step["call"], ctx)
+        rescue *STEP_ERRORS => e
+          e
+        end
+        if step.key?("outcome")
+          check_outcome!(step["outcome"], result, "#{where}.outcome")
+        elsif result.is_a?(Exception)
+          raise Fail, "#{where}: the call raised #{result.class}: #{result.message}"
+        end
+        ctx[step["save_as"]] = result if step.key?("save_as")
+      elsif step.key?("connect")
+        begin
+          ctx.fetch(step["connect"]).connect
+        rescue DecisionNode::SessionClosed => e
+          # A refused handshake may surface here or as the first event: both count.
+          events << norm_event(e)
+        end
+      elsif step.key?("send")
+        args = step["send"].dup
+        name = args.delete("session")
+        ctx.fetch(name).send(**kwargs(args.transform_values { |v| decode(v, ctx) }))
+      elsif step.key?("read")
+        read_events(step["read"], ctx, events, where)
+      elsif step.key?("end")
+        begin
+          ctx.fetch(step["end"]).end
+          events << { "ended" => true }
+        rescue DecisionNode::DecisionNodeError => e
+          events << { "end_error" => { "class" => e.class.name.split("::").last, "status" => e.status } }
+        end
+      elsif step.key?("close")
+        ctx.fetch(step["close"]).close
+      elsif step.key?("mock_clock")
+        mock_clock(session, step["mock_clock"])
+      elsif step.key?("sleep_ms")
+        sleep(step["sleep_ms"] / 1000.0)
+      else
+        raise Fail, "#{where}: unknown step #{step.keys}"
+      end
+    end
+  end
+
+  def read_events(spec, ctx, events, where)
+    s = ctx.fetch(spec["session"])
+    count = spec["count"]
+    timeout = spec.fetch("timeout_ms", READ_TIMEOUT_MS) / 1000.0
+    loop do
+      event = s.next_event(timeout: timeout)
+      raise Fail, "#{where}: no session event arrived in time (#{events.size} read so far)" if event.nil?
+
+      events << norm_event(event)
+      break if event.is_a?(DecisionNode::SessionClosed)
+      next if count.nil?
+
+      count -= 1
+      break if count.zero?
+    end
+  end
+
+  def check_sequence!(expected, log)
+    got = describe(log)
+    raise Fail, "request sequence: expected #{expected.size} requests, the mock received #{log.size}: #{got}" unless expected.size == log.size
+
+    expected.zip(log).each_with_index do |(spec, rec), i|
+      raise Fail, "request sequence[#{i}]: expected #{spec['method']}, got #{got[i]}" unless rec["method"] == spec["method"]
+      if spec.key?("path") && rec["path"] != spec["path"]
+        raise Fail, "request sequence[#{i}]: expected #{spec['method']} #{spec['path']}, got #{got[i]}"
+      end
+      if spec.key?("path_pattern") && !rec["path"].match?(Regexp.new(spec["path_pattern"]))
+        raise Fail, "request sequence[#{i}]: #{got[i]} does not match #{spec['path_pattern']}"
+      end
+      if spec.key?("status") && rec["status"] != spec["status"]
+        raise Fail, "request sequence[#{i}]: #{got[i]} answered #{rec['status']}, expected #{spec['status']}"
+      end
+      checks = spec.slice("headers", "header_patterns", "absent_headers", "body_checks", "jsonl_count", "jsonl_checks",
+                          "body_base64", "body_sha256", "query")
+      check_request!(checks.merge("method" => spec["method"], "any_body" => true), rec, "request sequence[#{i}]") unless checks.empty?
+    end
+  end
+
+  def check_counts!(expected, log)
+    expected.each do |spec|
+      n = log.count do |r|
+        r["method"] == spec["method"] && (!spec.key?("path") || r["path"] == spec["path"]) &&
+          (!spec.key?("path_pattern") || r["path"].match?(Regexp.new(spec["path_pattern"])))
+      end
+      what = "#{spec['method']} #{spec['path'] || spec['path_pattern']}"
+      raise Fail, "#{what}: expected #{spec['count']} requests, got #{n}" if spec.key?("count") && n != spec["count"]
+
+      in_range!(spec.slice("min", "max"), n, what)
+    end
+  end
+
+  def check_events!(expected, events)
+    raise Fail, "session events: expected #{expected.size}, got #{events.size}: #{short(events)}" unless expected.size == events.size
+
+    expected.zip(events).each_with_index do |(spec, event), i|
+      raise Fail, "session events[#{i}]: expected #{spec.keys.first}, got #{short(event)}" unless spec.keys == event.keys
+
+      key = spec.keys.first
+      if spec[key].is_a?(Hash)
+        match!(spec[key], event[key], "session events[#{i}].#{key}")
+      elsif !same?(spec[key], event[key])
+        raise Fail, "session events[#{i}]: expected #{short(spec)}, got #{short(event)}"
+      end
+    end
   end
 
   def run_behaviour(case_)
@@ -407,14 +829,20 @@ module Conformance
     extra = { "x-mock-session" => session }
     extra["x-mock-scenario"] = "behaviour/#{case_['id']}" if case_["mock"]
     exp = case_["expect"]
-    waits = nil
+    waits = []
+    events = []
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     result = begin
       # An argument error may come from the constructor (a bad base_url, timeout
       # or max_retries) or from the call; both count, as long as nothing was sent.
       client = make_client(case_, extra)
       waits = record_waits(client) if exp.key?("scheduled_waits_ms")
-      invoke(client, case_["call"])
+      if case_.key?("steps")
+        run_steps(case_, client, session, events)
+        nil
+      else
+        invoke(client, case_["call"])
+      end
     rescue DecisionNode::DecisionNodeError, ArgumentError => e
       e
     end
@@ -425,9 +853,7 @@ module Conformance
     if exp.key?("one_of")
       # The rule allows more than one way to comply; one of them must hold whole.
       reasons = exp["one_of"].each_with_index.filter_map do |alt, i|
-        unless log.size == alt["attempts"]
-          raise Fail, "attempts: expected #{alt['attempts']}, the mock received #{log.size}"
-        end
+        raise Fail, "attempts: expected #{alt['attempts']}, the mock received #{log.size}" unless log.size == alt["attempts"]
 
         check_outcome!(alt["outcome"], result, "outcome")
         nil
@@ -435,10 +861,13 @@ module Conformance
         "one_of[#{i}]: #{e.message}"
       end
       raise Fail, reasons.join("; ") if reasons.size == exp["one_of"].size
-    elsif log.size != exp["attempts"]
-      raise Fail, "attempts: expected #{exp['attempts']}, the mock received #{log.size}"
+    elsif exp.key?("attempts") && log.size != exp["attempts"]
+      raise Fail, "attempts: expected #{exp['attempts']}, the mock received #{log.size}: #{describe(log)}"
     end
-
+    check_sequence!(exp["request_sequence"], log) if exp.key?("request_sequence")
+    check_counts!(exp["request_counts"], log) if exp.key?("request_counts")
+    check_events!(exp["session_events"], events) if exp.key?("session_events")
+    in_range!(exp["pongs"], info["pongs"], "pongs") if exp.key?("pongs")
     check_outcome!(exp["outcome"], result, "outcome") if exp.key?("outcome")
     if exp.key?("results")
       unless result.is_a?(Array) && result.size == exp["results"].size
@@ -453,23 +882,25 @@ module Conformance
     end
     if exp.key?("scheduled_waits_ms")
       want = exp["scheduled_waits_ms"]
-      waits ||= []
-      raise Fail, "scheduled waits: expected #{want.size}, got #{waits.size}" unless waits.size == want.size
+      raise Fail, "scheduled waits: expected #{want.size}, got #{waits.size}: #{waits.inspect}" unless waits.size == want.size
 
       want.each_with_index { |range, i| in_range!(range, waits[i] * 1000, "wait #{i + 1} (ms)") }
     end
+    raise Fail, "the steps raised #{result.class}: #{result.message}" if case_.key?("steps") && result.is_a?(Exception)
+
     (exp["unrequested_paths"] || []).each do |p|
       hits = mock_log("*", path: p)["requests"]
       raise Fail, "#{p} was requested #{hits.size} time(s)" unless hits.empty?
     end
     if exp.key?("gaps_ms")
-      times = log.map { |r| r["time"] }
-      gaps = times.each_cons(2).map { |a, b| (b - a) * 1000 }
+      gaps = log.map { |r| r["time"] }.each_cons(2).map { |a, b| (b - a) * 1000 }
       exp["gaps_ms"].each_with_index { |range, i| in_range!(range, gaps[i], "gap #{i + 1} (ms)") }
     end
     in_range!(exp["elapsed_ms"], elapsed, "elapsed (ms)") if exp.key?("elapsed_ms")
     in_range!(exp["max_in_flight"], info["max_in_flight"], "max in flight") if exp.key?("max_in_flight")
   end
+
+  # ---- constants
 
   def run_constants(case_)
     name = case_.dig("names", "ruby") || case_["constant"]
