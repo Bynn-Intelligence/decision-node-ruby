@@ -125,4 +125,37 @@ class ResultsTest < Minitest::Test
                                     "max_input_tokens" => 32_768)
     assert_equal({ "max_input_tokens" => 32_768 }, m.limits)
   end
+
+  STRICT = DecisionNode::TruthAnswer::STRICT_TYPE
+
+  def test_the_strict_type_name_reads_as_truth
+    answer = DecisionNode::Answer.from({ "type" => STRICT, STRICT => 0.07 })
+    assert_instance_of DecisionNode::TruthAnswer, answer
+    assert_in_delta 0.07, answer.truth
+    assert_instance_of DecisionNode::UnknownAnswer, DecisionNode::Answer.from({ "type" => STRICT, "truth" => 0.07 })
+  end
+
+  def test_number_answer
+    raw = { "type" => "number", "number" => 7, "expected" => 7.0, "confidence" => 0.78,
+            "probabilities" => { "6" => 0.105, "7" => 0.783, "8" => 0.098 } }
+    answer = DecisionNode::Answer.from(raw)
+    assert_instance_of DecisionNode::NumberAnswer, answer
+    assert_equal [7, 7.0, 0.78], [answer.number, answer.expected, answer.confidence]
+    assert_kind_of Integer, answer.number
+    assert_equal({ "6" => 0.105, "7" => 0.783, "8" => 0.098 }, answer.probabilities)
+  end
+
+  def test_a_malformed_number_answer_is_unknown
+    raw = { "type" => "number", "number" => "7", "expected" => 7.0, "confidence" => 0.5, "probabilities" => {} }
+    assert_instance_of DecisionNode::UnknownAnswer, DecisionNode::Answer.from(raw)
+  end
+
+  def test_model_info_sessions_and_batch
+    m = DecisionNode::ModelInfo.new("name" => "decisionnode-1.0", "context_tokens" => 32_768,
+                                    "sessions" => { "max_per_key" => 4 }, "batch" => { "add_bytes" => 10_485_760 })
+    assert_equal 4, m.sessions["max_per_key"]
+    assert_equal 4, m.limit(:sessions, :max_per_key)
+    assert_equal 10_485_760, m.batch["add_bytes"]
+    assert_equal 32_768, m.limit("context_tokens")
+  end
 end

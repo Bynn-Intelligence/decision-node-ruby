@@ -11,8 +11,15 @@ class DecisionNode
     def self.from(raw)
       return UnknownAnswer.new({ "value" => raw }) unless raw.is_a?(Hash)
 
-      klass = { "truth" => TruthAnswer, "choice" => ChoiceAnswer, "score" => ScoreAnswer }[raw["type"]]
+      klass = TYPES[raw["type"]]
       klass&.well_formed?(raw) ? klass.new(raw) : UnknownAnswer.new(raw)
+    end
+
+    # Answers by question id, each typed with Answer.from.
+    def self.map(answers)
+      return {} unless answers.is_a?(Hash)
+
+      answers.each_with_object({}) { |(id, a), h| h[id] = from(a) }
     end
 
     def self.number?(value)
@@ -43,18 +50,26 @@ class DecisionNode
   # server sent, so a new question type does not break an older client.
   class UnknownAnswer < Answer; end
 
-  # The answer to a `truth` question.
+  # The answer to a `truth` question. An answer under the type name that
+  # `/v1/systemone` uses for truth questions (STRICT_TYPE) is read the same way.
   class TruthAnswer < Answer
+    # The wire name `/v1/systemone` takes for the truth type.
+    STRICT_TYPE = "noul"
+
     # The probability that the answer is true.
     attr_reader :truth
 
     def self.well_formed?(raw)
-      number?(raw["truth"])
+      number?(raw[value_field(raw)])
+    end
+
+    def self.value_field(raw)
+      raw["type"] == STRICT_TYPE ? STRICT_TYPE : "truth"
     end
 
     def initialize(raw)
       super
-      @truth = raw["truth"]
+      @truth = raw[self.class.value_field(raw)]
     end
   end
 
@@ -111,6 +126,40 @@ class DecisionNode
     def int_keys(map)
       map.each_with_object({}) { |(k, v), h| h[Integer(k, 10)] = v }
     end
+  end
+
+  # The answer to a `number` question.
+  class NumberAnswer < Answer
+    # The most probable value of the grid, the JSON number as received.
+    attr_reader :number
+    # The probability-weighted mean over the grid, as received.
+    attr_reader :expected
+    # The probability of `number`.
+    attr_reader :confidence
+    # Probability by grid value, keyed by the value exactly as the server
+    # wrote it ("7", "3.5").
+    attr_reader :probabilities
+
+    def self.well_formed?(raw)
+      probs = raw["probabilities"]
+      number?(raw["number"]) && number?(raw["expected"]) && number?(raw["confidence"]) &&
+        probs.is_a?(Hash) && probs.each_value.all? { |v| number?(v) }
+    end
+
+    def initialize(raw)
+      super
+      @number = raw["number"]
+      @expected = raw["expected"]
+      @confidence = raw["confidence"]
+      @probabilities = raw["probabilities"].dup
+    end
+  end
+
+  class Answer
+    TYPES = {
+      "truth" => TruthAnswer, TruthAnswer::STRICT_TYPE => TruthAnswer, "choice" => ChoiceAnswer,
+      "score" => ScoreAnswer, "number" => NumberAnswer
+    }.freeze
   end
 
   # Token counts of a decision.
@@ -219,7 +268,7 @@ class DecisionNode
       @raw = body
       @headers = headers
       @model = body["model"]
-      @answers = (body["answers"] || {}).each_with_object({}) { |(id, a), h| h[id] = Answer.from(a) }
+      @answers = Answer.map(body["answers"])
       usage = body["usage"].is_a?(Hash) ? body["usage"] : {}
       @usage = Usage.new(usage["input_tokens"], usage["output_tokens"])
       @request_id = headers["x-request-id"]
@@ -251,16 +300,33 @@ class DecisionNode
   # A model listed by `GET /v1/models`.
   class ModelInfo
     attr_reader :name, :description, :release_date
-    # Every other field of the entry: the model's published limits.
+    # Every other field of the entry: the model's published limits, the
+    # `sessions` and `batch` objects included.
     attr_reader :limits
     attr_reader :raw
 
     def initialize(raw)
-      @raw = raw
-      @name = raw["name"]
-      @description = raw["description"]
-      @release_date = raw["release_date"]
-      @limits = raw.reject { |k, _| %w[name description release_date].include?(k) }
+      @raw = raw.is_a?(Hash) ? raw : {}
+      @name = @raw["name"]
+      @description = @raw["description"]
+      @release_date = @raw["release_date"]
+      @limits = @raw.reject { |k, _| %w[name description release_date].include?(k) }
+    end
+
+    # One published limit by name, for example "context_tokens", or a path
+    # into a nested one: limit("sessions", "max_per_key").
+    def limit(*path)
+      limits.dig(*path.map(&:to_s))
+    end
+
+    # The session limits (`max_per_key`, `max_window`, `max_frame_tokens`, ...), or nil.
+    def sessions
+      limits["sessions"]
+    end
+
+    # The Batch API limits (`requests_per_batch`, `add_bytes`, ...), or nil.
+    def batch
+      limits["batch"]
     end
   end
 end

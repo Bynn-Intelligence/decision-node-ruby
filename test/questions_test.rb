@@ -47,4 +47,15 @@ class QuestionsTest < Minitest::Test
     obj = Object.new.extend(DecisionNode::Questions)
     assert_equal "truth", obj.send(:truth, "x")["type"]
   end
+
+  def test_number_leaves_out_what_is_not_given
+    assert_equal({ "type" => "number", "instructions" => "How many?" }, DecisionNode.number("How many?"))
+    assert_equal({ "type" => "number", "instructions" => "T?", "min" => -40.5, "max" => 10.25, "step" => 0.25 },
+                 DecisionNode::Questions.number("T?", min: -40.5, max: 10.25, step: 0.25))
+  end
+
+  def test_number_through_the_module
+    obj = Object.new.extend(DecisionNode::Questions)
+    assert_equal({ "type" => "number", "instructions" => "n", "max" => 9 }, obj.send(:number, "n", max: 9))
+  end
 end

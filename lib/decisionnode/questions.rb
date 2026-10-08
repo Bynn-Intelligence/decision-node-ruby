@@ -50,6 +50,21 @@ class DecisionNode
       question["criteria"] = levels.nil? ? [] : levels.to_a
       question
     end
+
+    # A value on a grid of numbers from `min` to `max` in steps of `step`.
+    # An argument left out is left out of the wire form, so the server's
+    # defaults apply: 0, 255 and 1.
+    #
+    #   number("How many cars are visible?", min: 0, max: 50)
+    #   number("Rating?", min: 0, max: 5, step: 0.5)
+    def number(instructions = nil, min: nil, max: nil, step: nil)
+      question = { "type" => "number" }
+      question["instructions"] = instructions unless instructions.nil?
+      question["min"] = min unless min.nil?
+      question["max"] = max unless max.nil?
+      question["step"] = step unless step.nil?
+      question
+    end
   end
 
   class << self
@@ -66,6 +81,11 @@ class DecisionNode
     # See Questions.score.
     def score(instructions = nil, levels = nil)
       Questions.score(instructions, levels)
+    end
+
+    # See Questions.number.
+    def number(instructions = nil, min: nil, max: nil, step: nil)
+      Questions.number(instructions, min: min, max: max, step: step)
     end
   end
 end
