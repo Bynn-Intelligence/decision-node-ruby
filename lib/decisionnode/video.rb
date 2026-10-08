@@ -82,6 +82,11 @@ class DecisionNode
   # is 2); `start` and `end` are the window read, on the frames' own times.
   # Each is sent only when given. Only these frames are sent, never a video
   # file, a URL or sound.
+  #
+  # The id is unique across the request's images and videos. The model sees
+  # the video as "Video <n>" (its place in the request's videos, from 1) with
+  # this id beside it, so text in the state or the instructions can refer to
+  # it by either.
   class Video
     attr_reader :id, :frames, :fps, :start, :end
 

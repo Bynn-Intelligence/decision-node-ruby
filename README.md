@@ -194,6 +194,21 @@ An upload is one `POST /v1/uploads` for the request's images, then one `PUT` per
 
 Every local image is checked before any request: its format from the first bytes (JPEG, PNG or WebP; a `media_type:` you give must match them), at most 10,485,760 bytes, and at most 40,000,000 pixels, read from the image header without decoding it. A request takes up to 16 images (URLs, inline and uploaded together), with unique ids; one upload call takes all of them. A 17th raises the API's `ValidationError`, a `too_long` entry on the images, before anything is sent. Many large images can still pass the model's token limit, which the API answers with a `ContextLimitError`. No image is ever resized or re-encoded. A file that cannot be read raises `ArgumentError` where the `Image` is made.
 
+### Referring to images and videos
+
+The model sees each image as "Picture 1", "Picture 2", ... with its id beside it, numbered from 1 in the order of `images:`, and each video as "Video 1", "Video 2", ... in the order of `videos:`, numbered separately. Text in the state, the instructions or a criterion can refer to an image by position ("Picture 2", "image 2", "the second image", "the last image") or by its id ("the receipt", "`receipt`"), and to a video the same way ("Video 1" or its id).
+
+```ruby
+dn.decide(
+  state: "Expense claim 4411.",
+  images: [
+    DecisionNode::Image.new("receipt", url: "https://files.example.com/claims/4411/receipt.jpg"),
+    DecisionNode::Image.new("statement", url: "https://files.example.com/claims/4411/statement.png")
+  ],
+  questions: { charged: DecisionNode.truth("Does the total in Picture 1 match the charge on the statement?") }
+)
+```
+
 ## Points and boxes
 
 A `point` question finds one spot in an image and a `box` question a rectangle around something, so the answer can be drawn, cropped or handed to a robot.
@@ -216,7 +231,7 @@ d["any_damage"].truth             # => 0.93
 
 | Argument | Meaning |
 |---|---|
-| `image:` | The id of the image to look in. Needed when the request has two or more images; with one, that one is used. |
+| `image:` | The id of the image to look in, a string. Needed when the request has two or more images; with one, that one is used. A reference by number ("Picture 2") goes in the instructions. |
 | `units:` | `"pixels"` (the default): integers in pixels of the image as sent, after its EXIF orientation. `"normalized"`: fractions of the width and the height from 0 to 1. |
 
 | Field | Meaning |

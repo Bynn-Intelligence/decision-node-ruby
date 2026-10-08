@@ -26,6 +26,11 @@ class DecisionNode
   # 40,000,000 pixels read from the header), then sent inline or uploaded by
   # the client's inline threshold. An image is never resized or re-encoded.
   #
+  # The id is unique within a request. The model sees the image as
+  # "Picture <n>" (its place in the request's images, from 1) with this id
+  # beside it, so text in the state or the instructions can refer to it by
+  # either.
+  #
   # An unreadable file or an argument of the wrong type raises ArgumentError
   # here; a fault in the image itself raises BadRequestError when it is sent,
   # before any request.

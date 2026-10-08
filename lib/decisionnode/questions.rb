@@ -67,7 +67,8 @@ class DecisionNode
     end
 
     # One spot in an image, answered with its `x` and `y`. `image` is the id
-    # of the image to look in, needed when the request has two or more;
+    # of the image to look in (a string), needed when the request has two or
+    # more; a reference by number ("Picture 2") goes in the instructions.
     # `units` is "pixels" (the API's default) or "normalized". Each is left
     # out of the wire form when not given.
     #
