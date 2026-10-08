@@ -191,17 +191,23 @@ Every local image is checked before any request: its format from the first bytes
 
 ## Checked before sending
 
-The SDK checks the API's fixed rules before any network call, so a request the API would refuse costs no round trip. A fault raises the class the API would answer with, with no `status` and no `request_id`:
+The SDK checks every fixed rule the API documents before any network call, so the server never sees a request the client could have refused. A fault raises what the server would answer: the same class, the same `error_type`, the documented message, and for a 422 a `ValidationError` whose `entries` are the server's list. A local error has no `status` and no `request_id`. The checks run in the server's order: the nesting limit, the 422 entries, the first 400 in question order, then the images.
 
-| Fault | Error |
-|---|---|
-| An image that breaks a rule of "Images", more than 4 images, repeated image ids, a URL that is not `https` or is longer than 2,048 characters | `BadRequestError` (`error_type` `api_usage_error`) |
-| A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions | `BadRequestError` |
-| A score with no levels; a number grid with `step` not above 0, `min` above `max`, a bound that is not a number, or more than 4,096 values (counted in exact decimals) | `ValidationError` |
+| Fault | Error | `error_type` |
+|---|---|---|
+| More than 128 objects and arrays inside each other; an unknown question type (on `systemone`, anything but truth, choice and score) | `BadRequestError`, "Invalid request." | `api_usage_error` |
+| A question that is not a Hash or has no `type`; instructions, a state, an option description, a score level or a truth side that is not a String, Hash or Array; a choice or score without criteria, or with criteria of the wrong shape; a score with no levels | `ValidationError` with the server's `entries` | null |
+| A number grid: a bound that is not a finite number, beyond 2^53, `step` not above 0, more than 6 decimals in `min` or `step`, beyond the decimal bound, `min` above `max`, more than 4,096 values (counted in exact decimals) | `ValidationError` with the server's `entries` | null |
+| A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number question without instructions | `BadRequestError` with the API's documented message | null |
+| More than 4 images, an empty or repeated image id, bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
+| An `https` image URL over 2,048 characters, with user information, on a port other than 443, without a host, or naming a private or reserved address literally | `BadRequestError` | `image_url_refused` |
+| `open_session`: `window` outside 1 to 64, `ttl_seconds` outside 1 to 3,600 | `ValidationError` with the server's `entries` | null |
+| `Session#send`: see "Sessions" | `BadRequestError` | `api_usage_error` |
+| `batches.create` and `add`: a missing, empty, non-String or repeated `custom_id`, an add with no requests; `batches.list`: `offset` below 0, `limit` outside 1 to 100 | `BadRequestError` with the API's documented message | `api_usage_error` |
 
-Limits counted in tokens are the server's to judge, because they differ by model and are published by `models`. `decide_raw` sends its body unchecked.
+After a `models` call the client also holds the limits `/v1/models` publishes and checks them: a session's `max_window` and `max_ttl_seconds`, a model that serves no sessions or answers no number questions, a batch's `requests_per_batch` and `max_custom_id_chars`, and the image and option bounds. Without that call those checks are left to the server. Limits counted in tokens are always the server's to judge. `decide_raw` sends its body unchecked.
 
-A bad argument raises Ruby's own `ArgumentError`, never a DecisionNode class: a `base_url`, `timeout`, `max_retries` or `inline_threshold` the client refuses, a `concurrency` below 1, an empty question map, a question that is not a Hash, an image file that cannot be read, and a value that cannot be serialised as JSON. A missing API key raises `AuthenticationError`, also without a request.
+A bad argument raises Ruby's own `ArgumentError`, never a DecisionNode class: a `base_url`, `timeout`, `max_retries` or `inline_threshold` the client refuses, a `concurrency` below 1, an empty question map, an image file that cannot be read, and a value that cannot be serialised as JSON. A missing API key raises `AuthenticationError`, also without a request.
 
 ## Sessions
 
@@ -232,7 +238,7 @@ s.end
 | Method | Does |
 |---|---|
 | `Session#connect` | Opens the socket, with the API key in the `Authorization` header (never in the URL) and the client's custom headers on the handshake |
-| `Session#send(frame:, image:, questions:, reset:, seq:)` | Sends one frame and returns its `seq`, counted from 1 unless given; never waits for a reply. A frame's image follows the threshold of "Images"; a URL image is refused, since frames take bytes or an upload |
+| `Session#send(frame:, image:, questions:, reset:, seq:)` | Sends one frame and returns its `seq`, counted from 1 unless given; never waits for a reply. A frame's image follows the threshold of "Images". A frame that breaks a fixed rule (no frame and no image, an empty frame, a `seq` out of range, an empty question list or an id the session does not have, a `reset` that is not a boolean, nesting over 128, a URL image, an image the API would refuse) raises `BadRequestError`: nothing is written and the frame takes no `seq` |
 | `Session#replies` | Each event in turn: `Reply` and `FrameError` values (a frame error is a value, never raised), then the `SessionClosed` that ends the stream. `next_event(timeout:)` reads one |
 | `Session#end` | Ends the session; a session already gone counts as ended |
 | `Session#close` | Closes the socket |
@@ -285,7 +291,7 @@ The calls one by one, on `dn.batches`:
 
 A `Batch` has every field of the batch object by name (`id`, `state`, `counters`, `created_at`, `finalized_at`, `expires_at`, `ended_at`, `results_url`, `results_expire_at`, `price_factor`, `usage`, `error`) and `ended?`. A `BatchResult` has `custom_id`, `status` (an Integer, or `"expired"` or `"cancelled"`), `headers`, `decision` (a `Decision` for a 200 line) and `error` (for an error line, the error `decide` would have raised, as a value).
 
-Every line carries `custom_id`, `model` (the request's, else the client's) and `state` (`""` when absent), and is checked before anything is sent. Its images follow the threshold of "Images", per line. `get`, `list`, `results` and `cancel` are retried like every call. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout, a lost answer or a 5xx, since a repeat could make a second draft. A `finalize` answered with a 409 is resolved by reading the batch: if it is no longer a draft, the earlier finalize went through and the batch is returned.
+Every line carries `custom_id`, `model` (the request's, else the client's) and `state` (`""` when absent), and every line of a call is checked before anything is sent. Its images follow the threshold of "Images", per line. `get`, `list`, `results` and `cancel` are retried like every call. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout, a lost answer or a 5xx, since a repeat could make a second draft. A `finalize` answered with a 409 is resolved by reading the batch: if it is no longer a draft, the earlier finalize went through and the batch is returned.
 
 ## Safety
 
@@ -409,7 +415,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.4) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.5) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.1 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 
