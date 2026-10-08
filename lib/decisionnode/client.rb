@@ -13,6 +13,9 @@ class DecisionNode
   DEFAULT_TIMEOUT = 10.0
   DEFAULT_MAX_RETRIES = 2
   DEFAULT_CONCURRENCY = 8
+  # Seconds for one image PUT to storage, apart from `timeout`: a 10 MB image
+  # on a slow uplink needs more than an API call does.
+  DEFAULT_UPLOAD_TIMEOUT = 60.0
 
   RETRY_STATUSES = ([408, 429] + (500..599).to_a).freeze
   BACKOFF_START = 0.5
@@ -55,7 +58,7 @@ class DecisionNode
     )
   }.each_value { |q| q.each_value(&:freeze).freeze }.freeze
 
-  attr_reader :base_url, :model, :timeout, :max_retries, :inline_threshold
+  attr_reader :base_url, :model, :timeout, :max_retries, :inline_threshold, :upload_timeout
 
   # The Batch API, a DecisionNode::Batches.
   attr_reader :batches
@@ -77,6 +80,8 @@ class DecisionNode
   # inline_threshold:: bytes; a request's local images that total less go
   #               inline as base64, at or above it they are uploaded
   #               (default DEFAULT_INLINE_THRESHOLD, 524,288). 0 always uploads.
+  # upload_timeout:: seconds for one image PUT to storage (default 60), apart
+  #               from `timeout`. Must be above 0.
   # http_client:: a NetHTTPTransport built with your own options, or another
   #               transport with the interface of NetHTTPTransport#call.
   # logger::      a Logger; when given, each attempt is logged at debug level
@@ -84,13 +89,14 @@ class DecisionNode
   #
   # A client is safe to share between threads and reuses its connections.
   def initialize(api_key: nil, base_url: nil, model: nil, timeout: nil, max_retries: nil,
-                 headers: nil, inline_threshold: nil, http_client: nil, logger: nil)
+                 headers: nil, inline_threshold: nil, upload_timeout: nil, http_client: nil, logger: nil)
     @api_key = given(api_key) || env("DECISIONNODE_API_KEY")
     @base_url = checked_base_url((given(base_url) || env("DECISIONNODE_BASE_URL") || DEFAULT_BASE_URL).chomp("/"))
     @model = given(model) || env("DECISIONNODE_MODEL") || DEFAULT_MODEL
     @timeout = timeout.nil? ? DEFAULT_TIMEOUT : checked_timeout(timeout)
     @max_retries = max_retries.nil? ? DEFAULT_MAX_RETRIES : checked_max_retries(max_retries)
     @inline_threshold = inline_threshold.nil? ? DEFAULT_INLINE_THRESHOLD : checked_threshold(inline_threshold)
+    @upload_timeout = upload_timeout.nil? ? DEFAULT_UPLOAD_TIMEOUT : checked_timeout(upload_timeout, "upload_timeout")
     @headers = (headers || {}).to_h { |k, v| [k.to_s, v.to_s] }.freeze
     @http = checked_http_client(http_client) || NetHTTPTransport.new
     @logger = logger
@@ -234,16 +240,49 @@ class DecisionNode
   # A 429 `session_limit_exceeded` (the key holds its most open sessions) is
   # never retried and raises SessionLimitError, a RateLimitError.
   def open_session(questions:, state: nil, instructions: nil, model: nil, window: nil, ttl_seconds: nil)
-    qs = prepared_questions(questions)
-    body = { "model" => given(model) || @model }
-    body["instructions"] = instructions unless instructions.nil?
-    body["state"] = state unless state.nil?
-    body["questions"] = qs
-    body["window"] = window unless window.nil?
-    body["ttl_seconds"] = ttl_seconds unless ttl_seconds.nil?
+    body = open_body(questions: questions, state: state, instructions: instructions, model: model,
+                     window: window, ttl_seconds: ttl_seconds)
     Checks.session_open!(body, limits: limits_for(body["model"]))
     raw, = request("POST", "/v1/sessions", encode(body), encoded: true, policy: :session_open)
     Session.new(self, raw)
+  end
+
+  CHECKED_CALLS = %w[decide systemone open_session batches.create batches.add].freeze
+
+  # Runs every local check a call would run before sending, alone: it raises
+  # exactly what the call would raise for this request (held /v1/models limits
+  # included) and returns nil when the request would be sent. Nothing is sent
+  # and nothing is uploaded.
+  #
+  #   dn.check_request("decide", state: "...", questions: { q: DecisionNode.truth("?") })
+  #   dn.check_request(:open_session, { questions: questions, window: 128 }) # raises ValidationError
+  #
+  # method:: "decide", "systemone", "open_session", "batches.create" or
+  #          "batches.add" (a String or Symbol).
+  # request:: the call's keyword arguments, as a Hash or as keywords. For
+  #          the batch calls, `requests:`; a `batch_id:` plays no part.
+  # Frames are checked with Session#check_frame.
+  def check_request(method, request = nil, **args)
+    name = method.to_s
+    raise ArgumentError, "check_request takes #{CHECKED_CALLS.join(', ')}, got #{method.inspect}" unless CHECKED_CALLS.include?(name)
+    raise ArgumentError, "request must be a Hash of the call's arguments" unless request.nil? || request.is_a?(Hash)
+
+    kw = (request || {}).merge(args).to_h { |k, v| [k.to_sym, v] }
+    case name
+    when "decide", "systemone"
+      unknown = kw.keys - DECIDE_ARGS
+      raise ArgumentError, "unknown argument(s) #{unknown.join(', ')} for #{name}" unless unknown.empty?
+
+      prepared_call(**kw, strict: name == "systemone")
+    when "open_session"
+      body = open_body(**kw)
+      Checks.session_open!(body, limits: limits_for(body["model"]))
+    else
+      raise ArgumentError, "requests must be an Array of Hashes" unless kw.fetch(:requests, []).respond_to?(:to_a)
+
+      check_lines(kw.fetch(:requests, []).to_a, allow_empty: name == "batches.create")
+    end
+    nil
   end
 
   # Runs one long-lived feed through sessions, reopening them as the close
@@ -356,13 +395,13 @@ class DecisionNode
     end
   end
 
-  def checked_timeout(value)
+  def checked_timeout(value, name = "timeout")
     seconds = Float(value)
-    raise ArgumentError, "timeout must be above 0 seconds, got #{value.inspect}" unless seconds.positive? && seconds.finite?
+    raise ArgumentError, "#{name} must be above 0 seconds, got #{value.inspect}" unless seconds.positive? && seconds.finite?
 
     seconds
   rescue TypeError
-    raise ArgumentError, "timeout must be a number of seconds, got #{value.inspect}"
+    raise ArgumentError, "#{name} must be a number of seconds, got #{value.inspect}"
   end
 
   def checked_seconds(value, name)
@@ -444,16 +483,31 @@ class DecisionNode
     end
   end
 
-  # The /v1/models entry of a model, when this client holds it, with its name.
+  # The body of POST /v1/sessions: only the fields given, and the model always.
+  def open_body(questions:, state: nil, instructions: nil, model: nil, window: nil, ttl_seconds: nil)
+    qs = prepared_questions(questions)
+    body = { "model" => given(model) || @model }
+    body["instructions"] = instructions unless instructions.nil?
+    body["state"] = state unless state.nil?
+    body["questions"] = qs
+    body["window"] = window unless window.nil?
+    body["ttl_seconds"] = ttl_seconds unless ttl_seconds.nil?
+    body
+  end
+
+  # The /v1/models entry of a model, when this client holds it, with the name
+  # the request uses: the entry of that name, else the entry that states the
+  # name as its `alias` or its pinned `version`. A name the held list does not
+  # state holds nothing, and its checks are left to the server.
   def limits_for(model)
     name = given(model) || @model
-    entry = @held[name]
+    entry = @held[name] || @held.each_value.find { |m| m["alias"] == name || m["version"] == name }
     entry ? entry.merge("model" => name) : {}
   end
 
   # Every fixed rule of a request before it is sent: the body (its images as
   # placeholders, so the nesting counts them), then the images themselves.
-  def check_request(body, images, profile: :decide)
+  def check_body(body, images, profile: :decide)
     probe = images.empty? ? body : body.merge("images" => Array.new(images.size) { { "id" => "" } })
     limits = limits_for(body["model"])
     Checks.request!(probe, profile: profile, limits: limits)
@@ -481,7 +535,7 @@ class DecisionNode
     imgs = prepared_images(images)
     state = state.equal?(UNSET) || state.nil? ? "" : state
     model = given(model) || @model
-    check_request(body_for(model, state, qs, nil), imgs, profile: strict ? :systemone : :decide)
+    check_body(body_for(model, state, qs, nil), imgs, profile: strict ? :systemone : :decide)
     if imgs.any? { |img| img.is_a?(Image) && img.local? }
       encode(body_for(model, state, qs, nil)) # a value that cannot be serialised fails here
       Prepared.new(state, qs, imgs, model, nil)
@@ -579,7 +633,10 @@ class DecisionNode
     raise ArgumentError, "the session has no stream_url" if url.nil?
 
     headers = { "Authorization" => "Bearer #{@api_key}", "User-Agent" => "decisionnode-ruby/#{VERSION}" }
-    SessionStream.new(url, headers.merge(@headers), @timeout)
+    options = @http.respond_to?(:session_options) ? @http.session_options.to_h : {}
+    proxy = options.fetch(:proxy, :env)
+    proxy = URI.parse(proxy) if proxy.is_a?(String)
+    SessionStream.new(url, headers.merge(@headers), @timeout, proxy: proxy, tls: options.fetch(:tls, nil) || {})
   end
 
   # ---- batches
@@ -601,7 +658,7 @@ class DecisionNode
     Checks.lines!(requests, allow_empty: allow_empty, limits: limits_for(nil))
     requests.each_with_index do |req, i|
       args, questions, images = line_parts(req, i)
-      check_request(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil), images)
+      check_body(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil), images)
     end
     nil
   end
@@ -631,7 +688,11 @@ class DecisionNode
   # policy:: :default retries 408, 429, 5xx, timeouts and connection errors;
   #          :mutation (batch create, add, finalize) only 429 and 529;
   #          :session_open never a 429 `session_limit_exceeded`.
-  def request(method, path, body, encoded: false, policy: :default, content_type: nil, raw: false)
+  #
+  # With a block, a 2xx body is handed to the block line by line as it
+  # arrives (when the transport can stream), and the text returned is empty.
+  # A stream that fails after its first line is not retried.
+  def request(method, path, body, encoded: false, policy: :default, content_type: nil, raw: false, &on_line)
     raise AuthenticationError, "no API key: pass api_key: or set DECISIONNODE_API_KEY" if @api_key.nil?
 
     data = body.nil? || encoded ? body : encode(body)
@@ -647,11 +708,12 @@ class DecisionNode
     attempt = 0
     loop do
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      lines = on_line && @http.respond_to?(:stream) ? LineSplitter.new(on_line) : nil
       begin
-        response = attempt_once(method, url, headers, data)
+        response = lines ? stream_once(method, url, headers, lines) : attempt_once(method, url, headers, data)
       rescue TimeoutError, ConnectionError => e
         log(method, path, e.class.name.split("::").last, nil, started, attempt)
-        raise if attempt >= @max_retries || policy == :mutation
+        raise if attempt >= @max_retries || policy == :mutation || lines&.started?
 
         @sleeper.call(backoff(attempt))
         attempt += 1
@@ -662,7 +724,12 @@ class DecisionNode
       # Only 2xx is a success. Redirects are never followed, so the key is
       # never sent to another URL or over plain HTTP: a 3xx is an error.
       if (200..299).cover?(response.status)
-        return [response.body.to_s, response.headers, response.status] if raw
+        if lines
+          lines.finish
+          return ["", response.headers, response.status]
+        end
+        response.body.to_s.each_line(&on_line) if on_line
+        return [on_line ? "" : response.body.to_s, response.headers, response.status] if raw || on_line
 
         return [parse_success(response), response.headers, response.status]
       end
@@ -678,6 +745,49 @@ class DecisionNode
     end
   end
 
+  # One streamed attempt: the transport hands a 2xx body over in chunks as it
+  # arrives, each read bounded by the timeout, so a results file of any size
+  # is read without holding it whole.
+  def stream_once(method, url, headers, lines)
+    response = @http.stream(method, url, headers, @timeout) { |chunk| lines << chunk }
+    unless response.is_a?(HTTPResponse)
+      raise ConnectionError, "the transport returned #{response.class}, not a DecisionNode::HTTPResponse"
+    end
+
+    response
+  end
+
+  # Cuts a stream of chunks into lines and hands each complete one on.
+  class LineSplitter
+    def initialize(on_line)
+      @on_line = on_line
+      @buffer = +""
+      @started = false
+    end
+
+    def <<(chunk)
+      @buffer << chunk.b
+      while (cut = @buffer.index("\n"))
+        line = @buffer.slice!(0, cut + 1)
+        @started = true
+        @on_line.call(line.force_encoding(Encoding::UTF_8))
+      end
+    end
+
+    def started?
+      @started
+    end
+
+    def finish
+      return if @buffer.empty?
+
+      @started = true
+      @on_line.call(@buffer.force_encoding(Encoding::UTF_8))
+      @buffer = +""
+    end
+  end
+  private_constant :LineSplitter
+
   def retryable?(error, policy)
     case policy
     when :mutation then [429, 529].include?(error.status)
@@ -689,11 +799,11 @@ class DecisionNode
   # One attempt under one deadline: the timeout covers the whole attempt, from
   # sending the request to the last byte of the body, whatever the transport
   # does in between.
-  def attempt_once(method, url, headers, data)
+  def attempt_once(method, url, headers, data, timeout: @timeout)
     response = begin
-      Timeout.timeout(@timeout, AttemptDeadline) { @http.call(method, url, headers, data, @timeout) }
+      Timeout.timeout(timeout, AttemptDeadline) { @http.call(method, url, headers, data, timeout) }
     rescue AttemptDeadline
-      raise TimeoutError, "no complete response within #{@timeout} s"
+      raise TimeoutError, "no complete response within #{timeout} s"
     end
     unless response.is_a?(HTTPResponse)
       raise ConnectionError, "the transport returned #{response.class}, not a DecisionNode::HTTPResponse"

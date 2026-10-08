@@ -173,15 +173,21 @@ class DecisionNode
     end
 
     # The results of an ended batch (`GET /v1/batches/{id}/results`), one
-    # BatchResult per request in upload order.
-    def results(batch_id)
-      text, = @client.__send__(:request, "GET", "/v1/batches/#{segment(batch_id)}/results", nil, raw: true)
+    # BatchResult per request in upload order. The JSON Lines file is read
+    # from the network line by line as it arrives, however many lines it has.
+    # With a block, each BatchResult is handed to it as its line arrives and
+    # nil is returned; without one, an Array of every result.
+    def results(batch_id, &block)
       builder = @client.method(:error_from)
-      text.each_line.filter_map do |line|
+      out = block ? nil : []
+      handle = lambda do |line|
         next if line.strip.empty?
 
-        BatchResult.new(JSON.parse(line, max_nesting: false), builder)
+        result = BatchResult.new(JSON.parse(line, max_nesting: false), builder)
+        block ? block.call(result) : out << result
       end
+      @client.__send__(:request, "GET", "/v1/batches/#{segment(batch_id)}/results", nil, raw: true, &handle)
+      out
     rescue JSON::ParserError => e
       raise ServerError.new("a results line is not JSON: #{e.message}")
     end

@@ -168,8 +168,7 @@ class DecisionNode
 
       # The frame's fixed rules first: a fault raises and nothing is written,
       # and the refused frame takes no seq.
-      Checks.frame!(frame: frame, image: image, questions: questions, reset: reset, seq: seq,
-                    known_questions: @raw["questions"], limits: @client.__send__(:limits_for, model))
+      check_frame(frame: frame, image: image, questions: questions, reset: reset, seq: seq)
       message = { "seq" => seq.nil? ? next_seq : seq }
       message["frame"] = frame unless frame.nil?
       message["image"] = @client.__send__(:frame_image, image) unless image.nil?
@@ -177,6 +176,16 @@ class DecisionNode
       message["reset"] = reset unless reset.nil?
       @stream.text(@client.__send__(:encode, message))
       message["seq"]
+    end
+
+    # Runs every check #send runs on a frame before writing it, alone: raises
+    # the BadRequestError #send would raise (held /v1/models limits included)
+    # and returns nil for a frame #send would send. Nothing is written, nothing
+    # is uploaded, no seq is used, and the session need not be connected.
+    def check_frame(frame: nil, image: nil, questions: nil, reset: nil, seq: nil)
+      Checks.frame!(frame: frame, image: image, questions: questions, reset: reset, seq: seq,
+                    known_questions: @raw["questions"], limits: @client.__send__(:limits_for, model))
+      nil
     end
 
     # Session#send with keyword arguments sends a frame (see #send_frame);

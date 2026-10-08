@@ -10,6 +10,13 @@ class DecisionNode
   # TLS socket from the standard library, with one reader thread. Pings are
   # answered at once; a socket that receives nothing, pings included, for
   # IDLE_LIMIT seconds is treated as lost (1006). Used by Session; not used directly.
+  #
+  # The socket follows the client's transport where a WebSocket can: a `wss`
+  # URL goes through the transport's proxy (else the proxy the environment
+  # names for Net::HTTP, `no_proxy` honoured) with an HTTP CONNECT tunnel, and
+  # TLS takes the transport's `net_http:` trust and client certificate
+  # settings (ca_file, ca_path, cert_store, cert, key, ...), with peer and
+  # hostname checks always on.
   class SessionStream
     # The server pings every 20 s and drops a socket after 45 s of silence.
     IDLE_LIMIT = 65
@@ -17,8 +24,16 @@ class DecisionNode
 
     attr_reader :url, :events
 
-    def initialize(url, headers, timeout)
+    # The `net_http:` settings that apply to the session's TLS context.
+    TLS_SETTINGS = %w[ca_file ca_path cert_store cert key extra_chain_cert ssl_version min_version max_version
+                      ciphers verify_depth].freeze
+
+    # proxy:: a proxy URI, :env to take the one the environment names, or nil for none.
+    # tls::   settings by name (TLS_SETTINGS); others are ignored.
+    def initialize(url, headers, timeout, proxy: :env, tls: {})
       @url = url
+      @proxy = proxy
+      @tls = tls
       @events = Queue.new
       @write_lock = Mutex.new
       @driver_lock = Mutex.new
@@ -68,7 +83,9 @@ class DecisionNode
       host = uri.host.to_s.delete_prefix("[").delete_suffix("]")
       case uri.scheme&.downcase
       when "wss"
-        tcp = Socket.tcp(host, uri.port || 443, connect_timeout: timeout)
+        port = uri.port || 443
+        proxy = proxy_for(host, port)
+        tcp = proxy ? self.class.tunnel(proxy, host, port, timeout) : Socket.tcp(host, port, connect_timeout: timeout)
         tls(tcp, host, timeout)
       when "ws"
         raise ArgumentError, "the stream URL must use wss, got #{uri}" unless LOOPBACK.include?(host.downcase)
@@ -85,11 +102,17 @@ class DecisionNode
       raise DecisionNode::ConnectionError, "cannot connect to the session stream: #{e.message} (#{e.class})"
     end
 
+    # The proxy for a wss host: the transport's, else the environment's as
+    # Net::HTTP finds it (no_proxy honoured), else none.
+    def proxy_for(host, port)
+      return @proxy unless @proxy == :env
+
+      URI::HTTP.new("http", nil, host, port, nil, nil, nil, nil, nil).find_proxy
+    end
+
     def tls(tcp, host, timeout)
       tcp.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-      context = OpenSSL::SSL::SSLContext.new
-      context.set_params(verify_mode: OpenSSL::SSL::VERIFY_PEER, verify_hostname: true)
-      ssl = OpenSSL::SSL::SSLSocket.new(tcp, context)
+      ssl = OpenSSL::SSL::SSLSocket.new(tcp, self.class.tls_context(@tls))
       ssl.hostname = host
       ssl.sync_close = true
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
@@ -105,6 +128,57 @@ class DecisionNode
     rescue OpenSSL::SSL::SSLError => e
       tcp.close
       raise DecisionNode::ConnectionError, "TLS to the session stream failed: #{e.message}"
+    end
+
+    # A TLS context with the given settings, certificate and hostname checks on.
+    def self.tls_context(settings)
+      params = settings.to_h { |k, v| [k.to_s.delete_suffix("="), v] }.select { |k, _| TLS_SETTINGS.include?(k) }
+      context = OpenSSL::SSL::SSLContext.new
+      context.set_params(params.transform_keys(&:to_sym).merge(verify_mode: OpenSSL::SSL::VERIFY_PEER, verify_hostname: true))
+      context
+    end
+
+    # A TCP socket to host:port through an HTTP proxy's CONNECT tunnel.
+    def self.tunnel(proxy, host, port, timeout)
+      unless proxy.scheme.to_s.casecmp?("http")
+        raise DecisionNode::ConnectionError, "a session socket goes through an http:// proxy only, got #{proxy.scheme}://"
+      end
+
+      tcp = Socket.tcp(proxy.host, proxy.port || 80, connect_timeout: timeout)
+      target = host.include?(":") ? "[#{host}]:#{port}" : "#{host}:#{port}"
+      head = +"CONNECT #{target} HTTP/1.1\r\nHost: #{target}\r\n"
+      if proxy.user
+        login = [proxy.user, proxy.password.to_s].map { |part| URI.decode_www_form_component(part) }.join(":")
+        head << "Proxy-Authorization: Basic #{[login].pack('m0')}\r\n"
+      end
+      tcp.write("#{head}\r\n")
+      answer = read_head(tcp, Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout)
+      status = answer[%r{\AHTTP/1\.[01] (\d{3})}, 1].to_i
+      return tcp if status == 200
+
+      tcp.close
+      raise DecisionNode::ConnectionError, "the proxy refused the tunnel to the session stream with HTTP #{status}"
+    rescue IOError, SystemCallError => e
+      tcp&.close
+      raise DecisionNode::ConnectionError, "the proxy tunnel to the session stream failed: #{e.message} (#{e.class})"
+    end
+
+    # The proxy's answer up to the blank line, read a byte at a time so nothing
+    # of the tunnel is taken.
+    def self.read_head(io, deadline)
+      head = +""
+      until head.end_with?("\r\n\r\n")
+        left = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        raise DecisionNode::TimeoutError, "the proxy did not answer in time" unless left.positive? && io.wait_readable(left)
+
+        byte = io.read_nonblock(1, exception: false)
+        next if byte == :wait_readable
+        raise DecisionNode::ConnectionError, "the proxy closed the connection" if byte.nil?
+
+        head << byte
+        raise DecisionNode::ConnectionError, "the proxy's answer is too long" if head.bytesize > 16_384
+      end
+      head
     end
 
     def wait(io, dir, deadline)

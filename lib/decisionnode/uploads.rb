@@ -273,7 +273,8 @@ class DecisionNode
     end
 
     # One PUT to the storage URL with exactly the returned headers and the
-    # bytes: no key, none of the client's headers, no redirect followed.
+    # bytes: no key, none of the client's headers, no redirect followed. Each
+    # attempt has the client's upload_timeout, apart from the API timeout.
     # Retried on 5xx and connection errors as an API call is; a 412 on a retry
     # means an earlier attempt stored the object; a 403 after the URL's time
     # is up presigns again, once. On success `target` names the stored upload.
@@ -284,7 +285,7 @@ class DecisionNode
       attempt = 0
       loop do
         response = begin
-          attempt_once("PUT", url, headers, image.data)
+          attempt_once("PUT", url, headers, image.data, timeout: @upload_timeout)
         rescue TimeoutError, ConnectionError => e
           log("PUT", "storage", e.class.name.split("::").last, nil, started, attempt)
           raise if attempt >= @max_retries

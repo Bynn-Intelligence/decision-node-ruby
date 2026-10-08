@@ -78,6 +78,43 @@ class DecisionNode
       end
     end
 
+    # Like #call, but a 2xx body is handed to the block in chunks as it
+    # arrives, each read bounded by `timeout`, and the returned response has
+    # an empty body. Any other status is read whole. Used for batch results.
+    def stream(method, url, headers, timeout, &on_chunk)
+      uri = URI.parse(url)
+      http = checkout(uri, timeout)
+      keep = false
+      begin
+        result = nil
+        http.request(build_request(method, uri, headers, nil)) do |response|
+          status = response.code.to_i
+          if (200..299).cover?(status)
+            response.read_body { |chunk| on_chunk.call(chunk) }
+            result = HTTPResponse.new(status, lower_headers(response), "")
+          else
+            result = HTTPResponse.new(status, lower_headers(response), response.read_body.to_s)
+          end
+          keep = !response["connection"].to_s.casecmp?("close")
+        end
+        result
+      rescue *TIMEOUT_ERRORS => e
+        raise DecisionNode::TimeoutError, "no response within #{timeout} s (#{e.class})"
+      rescue *CONNECTION_ERRORS => e
+        raise DecisionNode::ConnectionError, "connection error: #{e.message} (#{e.class})"
+      ensure
+        keep ? checkin(uri, http) : discard(http)
+      end
+    end
+
+    # What a session's socket takes from this transport: the proxy (:env when
+    # none was given, so the environment's applies as it does here) and the
+    # `net_http:` settings that apply to TLS.
+    def session_options
+      tls = @net_http.each_with_object({}) { |(setter, value), h| h[setter.to_s.chomp("=")] = value }
+      { proxy: @proxy || :env, tls: tls.select { |name, _| DecisionNode::SessionStream::TLS_SETTINGS.include?(name) } }
+    end
+
     # Net::HTTP never follows a redirect on its own.
     def follow_redirects?
       false
