@@ -17,6 +17,7 @@ end
 require_relative "decisionnode/version"
 require_relative "decisionnode/errors"
 require_relative "decisionnode/questions"
+require_relative "decisionnode/image_header"
 require_relative "decisionnode/image"
 require_relative "decisionnode/results"
 require_relative "decisionnode/transport"
