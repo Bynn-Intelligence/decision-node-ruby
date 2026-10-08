@@ -11,14 +11,17 @@ class DecisionNode
   # any other address than the one it asked for.
   HTTPResponse = Struct.new(:status, :headers, :body, :url)
 
-  # The default transport: Net::HTTP with a small pool of kept-alive
-  # connections, safe to share between threads. It never follows a redirect.
+  # The default transport: Net::HTTP with a pool of kept-alive connections per
+  # host, safe to share between threads, so repeated calls skip the TCP and
+  # TLS handshakes. It never follows a redirect.
   #
   #   DecisionNode::NetHTTPTransport.new(
   #     proxy: "http://proxy.example.com:3128",
   #     net_http: { ca_file: "/etc/ssl/certs/company-ca.pem" }
   #   )
   #
+  # max_idle::  idle connections kept per host (default 16).
+  # keep_alive_timeout:: seconds an idle connection is reused for (default 15).
   # proxy::    a proxy URL, else the proxy environment variables Net::HTTP reads.
   # net_http:: Net::HTTP settings applied to every connection, by setter name
   #            (ca_file, ca_path, cert_store, cert, key, ...). Settings that
@@ -31,7 +34,8 @@ class DecisionNode
   # Any object with the same `call` method can be passed to the client as
   # `http_client:`. It returns an HTTPResponse and raises
   # DecisionNode::TimeoutError or DecisionNode::ConnectionError when no response
-  # arrives. It must never follow a redirect and must say so by answering false
+  # arrives. Methods are GET, POST, PUT (an image upload to the storage URL the
+  # API returned, with exactly the headers given) and DELETE. It must never follow a redirect and must say so by answering false
   # to `follow_redirects?`; the client refuses any other transport. A response
   # whose `url` differs from the requested one is an error.
   class NetHTTPTransport
@@ -41,8 +45,9 @@ class DecisionNode
       Net::HTTPBadResponse, Net::ProtocolError
     ].freeze
 
-    def initialize(max_idle: 16, proxy: nil, net_http: {})
+    def initialize(max_idle: 16, keep_alive_timeout: 15, proxy: nil, net_http: {})
       @max_idle = max_idle
+      @keep_alive_timeout = keep_alive_timeout
       @proxy = proxy.nil? ? nil : URI.parse(proxy.to_s)
       @net_http = net_http.to_h { |k, v| [:"#{k.to_s.delete_suffix('=')}=", v] }
       @net_http.each do |setter, value|
@@ -129,6 +134,7 @@ class DecisionNode
         http.use_ssl = false
       end
       http.max_retries = 0 # retries are the client's, so every attempt is counted
+      http.keep_alive_timeout = @keep_alive_timeout
       http
     end
 
@@ -175,10 +181,26 @@ class DecisionNode
         case method
         when "GET" then Net::HTTP::Get.new(path)
         when "POST" then Net::HTTP::Post.new(path)
+        when "PUT" then bare(Net::HTTP::Put.new(path))
+        when "DELETE" then Net::HTTP::Delete.new(path)
         else raise ArgumentError, "unsupported method #{method}"
         end
       headers.each { |name, value| request[name] = value }
-      request.body = body unless body.nil?
+      if body
+        request.body = body
+      elsif request.request_body_permitted?
+        # A POST without a body (finalize, cancel) goes out with Content-Length 0
+        # and no Content-Type, rather than the form type Net::HTTP would add.
+        request.content_length = 0
+        request.define_singleton_method(:request_body_permitted?) { false }
+      end
+      request
+    end
+
+    # A storage PUT carries exactly the headers it is given: none of the
+    # defaults Net::HTTP adds on its own.
+    def bare(request)
+      %w[accept accept-encoding user-agent].each { |name| request.delete(name) }
       request
     end
 
