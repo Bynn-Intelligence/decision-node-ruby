@@ -224,8 +224,10 @@ class DecisionNode
 
   # Token counts of a decision and, for a request with videos, the frames the
   # API read (an Integer) and the seconds of video they cover (a number as
-  # received); each nil when the response has none.
-  Usage = Struct.new(:input_tokens, :output_tokens, :video_frames, :video_seconds)
+  # received); for a request that named boosters, `booster_tokens` (the share
+  # of `input_tokens` the boosters' readings take) and `boosters` (the booster
+  # calls billed). Each is nil when the response has none.
+  Usage = Struct.new(:input_tokens, :output_tokens, :video_frames, :video_seconds, :booster_tokens, :boosters)
 
   # The result of the safety check that runs on every decision on the hosted API,
   # parsed from the `x-decisionnode-safety` response header.
@@ -323,6 +325,9 @@ class DecisionNode
     # What the API says it changed while reading the request's videos (a
     # lower rate or resolution), each sentence as sent; empty when it sent none.
     attr_reader :warnings
+    # What each booster the request named found, as booster name to
+    # Evidence in the request's order; nil when the request named none.
+    attr_reader :evidence
     # The parsed response body.
     attr_reader :raw
     # The response headers, names in lower case.
@@ -337,7 +342,10 @@ class DecisionNode
       usage = body["usage"].is_a?(Hash) ? body["usage"] : {}
       @usage = Usage.new(usage["input_tokens"], usage["output_tokens"],
                          usage["video_frames"].is_a?(Integer) ? usage["video_frames"] : nil,
-                         usage["video_seconds"].is_a?(Numeric) ? usage["video_seconds"] : nil)
+                         usage["video_seconds"].is_a?(Numeric) ? usage["video_seconds"] : nil,
+                         usage["booster_tokens"].is_a?(Integer) ? usage["booster_tokens"] : nil,
+                         usage["boosters"].is_a?(Integer) ? usage["boosters"] : nil)
+      @evidence = Evidence.map(body["evidence"])
       @warnings = body["warnings"].is_a?(Array) ? body["warnings"].grep(String).freeze : [].freeze
       @request_id = headers["x-request-id"]
       @latency_ms = parse_latency(headers["x-decisionnode-latency-ms"])
@@ -365,13 +373,23 @@ class DecisionNode
     end
   end
 
-  # A model listed by `GET /v1/models`.
+  # A model listed by `GET /v1/models`: a model of the catalogue, or one of
+  # the key's workspace's fine-tuned models.
   class ModelInfo
     attr_reader :name, :description, :release_date
     # Every other field of the entry: the model's published limits, the
     # `sessions` and `batch` objects included.
     attr_reader :limits
     attr_reader :raw
+    # true for a fine-tuned model; nil for a model of the catalogue.
+    attr_reader :fine_tuned
+    # A fine-tuned model's base model (its pinned name), else nil.
+    attr_reader :base
+    # A fine-tuned model's version number (an Integer), else nil.
+    attr_reader :adapter_version
+    # A fine-tuned model's status: "deployed" (it answers decisions), "ready"
+    # (trained, not deployed), or another value as sent; else nil.
+    attr_reader :status
 
     def initialize(raw)
       @raw = raw.is_a?(Hash) ? raw : {}
@@ -379,6 +397,15 @@ class DecisionNode
       @description = @raw["description"]
       @release_date = @raw["release_date"]
       @limits = @raw.reject { |k, _| %w[name description release_date].include?(k) }
+      @fine_tuned = [true, false].include?(@raw["fine_tuned"]) ? @raw["fine_tuned"] : nil
+      @base = @raw["base"].is_a?(String) ? @raw["base"] : nil
+      @adapter_version = @raw["adapter_version"].is_a?(Integer) ? @raw["adapter_version"] : nil
+      @status = @raw["status"].is_a?(String) ? @raw["status"] : nil
+    end
+
+    # Whether this is a fine-tuned model.
+    def fine_tuned?
+      fine_tuned == true
     end
 
     # One published limit by name, for example "context_tokens", or a path

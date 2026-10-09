@@ -4,6 +4,23 @@ All notable changes to this gem are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the gem uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+Implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.3"`): boosters and fine-tuned models.
+
+### Added
+
+- Boosters: `boosters:` on `decide`, `check`, `classify`, `score`, `number`, `gate`, `decide_many` requests, batch requests and `check_request`, taking names (`"age"`), `DecisionNode::Booster.new(name, images:, require:, options:)` or wire-form Hashes, sent in the order given; each `Booster` argument is sent only when given. Without boosters, or with an empty Array, the request has no `boosters` field. Nothing about boosters is checked before sending, except that their options count toward the nesting limit. Sessions take no boosters.
+- `Decision#evidence`: booster name to `DecisionNode::Evidence` (`version`, `status`, `latency_ms`, `results`, `raw`) in the request's order, `nil` for a request without boosters. Readings are `AgeReading` (`image`, `faces`, `age_years`, `low`, `high`, `confidence`), `AiGeneratedReading` (`image`, `generated`, `confidence`, `method`, `top_generator` as a `TopGenerator` with `name` and `probability`, `c2pa_signer`) and, for a booster this version does not know or a reading with a field missing or of the wrong type, `UnknownReading` with its `raw` fields; a reading never fails the decision. A batch result's decision has them too.
+- `usage.booster_tokens` and `usage.boosters`, `nil` when the response has none.
+- `DecisionNodeError#boosters`: the `x-decisionnode-boosters` header as booster name to `DecisionNode::BoosterStatus` (`status`, `latency_ms`), in the request's order; an empty Hash when there is none.
+- Fine-tuned models: a fine-tuned model's name (`decisionnode-1.0-flash@acme/fraud`, or pinned with `:3`) is sent as given, and `Decision#model` is the pinned name that answered. `ModelInfo#fine_tuned`, `#base`, `#adapter_version` and `#status` (and `fine_tuned?`), `nil` on a catalogue model.
+- The README documents boosters, their price and errors, and fine-tuned model names.
+
+### Changed
+
+- A 403 whose `error_type` is not `refusal_error` (`booster_not_enabled`, a suspended workspace) is a `PermissionDeniedError`, as before; a 529 `booster_unavailable` is an `OverloadedError`, retried like every 529.
+
 ## [0.2.0] - Unreleased
 
 Implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.2"`): sixteen images a request, videos sent as frames, and point and box questions.

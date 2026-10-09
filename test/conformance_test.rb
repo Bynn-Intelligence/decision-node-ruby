@@ -18,7 +18,10 @@ module Conformance
   ROOT = ENV.fetch("DECISIONNODE_CONFORMANCE_DIR", "").then { |dir| dir.empty? ? nil : File.expand_path(dir) }
   KINDS = %w[requests responses errors behaviour constants].freeze
   ENV_VARS = %w[DECISIONNODE_API_KEY DECISIONNODE_BASE_URL DECISIONNODE_MODEL].freeze
-  EXACT = %w[probabilities legend raw entries safety body limits].freeze
+  EXACT = %w[probabilities legend raw entries safety body limits evidence boosters].freeze
+  # Compared whole and in their key order too: evidence in the request's order, an
+  # error's boosters in the header's.
+  ORDERED = %w[evidence boosters].freeze
   READ_TIMEOUT_MS = 10_000
 
   class Fail < StandardError; end
@@ -107,6 +110,9 @@ module Conformance
 
         if EXACT.include?(k)
           raise Fail, "#{path}.#{k}: expected #{short(v)}, got #{short(actual[k])}" unless same?(v, actual[k])
+          if ORDERED.include?(k) && v.is_a?(Hash) && v.keys != actual[k].keys
+            raise Fail, "#{path}.#{k}: expected the order #{v.keys}, got #{actual[k].keys}"
+          end
         else
           match!(v, actual[k], "#{path}.#{k}")
         end
@@ -193,7 +199,33 @@ module Conformance
 
   def norm_usage(usage)
     usage && { "input_tokens" => usage.input_tokens, "output_tokens" => usage.output_tokens,
-               "video_frames" => usage.video_frames, "video_seconds" => usage.video_seconds }
+               "video_frames" => usage.video_frames, "video_seconds" => usage.video_seconds,
+               "booster_tokens" => usage.booster_tokens, "boosters" => usage.boosters }
+  end
+
+  AGE_FIELDS = %w[image faces age_years low high confidence].freeze
+  AI_GENERATED_FIELDS = %w[image generated confidence method c2pa_signer].freeze
+
+  def norm_reading(reading)
+    case reading
+    when DecisionNode::AgeReading
+      AGE_FIELDS.to_h { |k| [k, reading.public_send(k)] }.merge("kind" => "age")
+    when DecisionNode::AiGeneratedReading
+      top = reading.top_generator
+      AI_GENERATED_FIELDS.to_h { |k| [k, reading.public_send(k)] }
+                         .merge("kind" => "ai_generated", "top_generator" => { "name" => top.name, "probability" => top.probability })
+    when DecisionNode::UnknownReading
+      { "kind" => "unknown", "raw" => reading.raw }
+    else
+      raise Fail, "not a reading: #{reading.class}"
+    end
+  end
+
+  def norm_evidence(evidence)
+    evidence&.transform_values do |e|
+      { "version" => e.version, "status" => e.status, "latency_ms" => e.latency_ms,
+        "results" => e.results.map { |r| norm_reading(r) } }
+    end
   end
 
   def norm_decision(decision)
@@ -204,6 +236,7 @@ module Conformance
       "usage" => norm_usage(decision.usage),
       "safety" => decision.safety&.to_h,
       "answers" => decision.answers.transform_values { |a| norm_answer(a) },
+      "evidence" => norm_evidence(decision.evidence),
       "warnings" => decision.warnings,
       "raw" => decision.raw
     }
@@ -221,7 +254,8 @@ module Conformance
       "category" => get.(:category),
       "safety" => get.(:safety)&.to_h,
       "entries" => get.(:entries),
-      "retry_after" => get.(:retry_after)
+      "retry_after" => get.(:retry_after),
+      "boosters" => get.(:boosters)&.transform_values { |b| { "status" => b.status, "latency_ms" => b.latency_ms } }
     }
   end
 
@@ -338,6 +372,7 @@ module Conformance
         return DecisionNode.number(args["instructions"], min: args["min"], max: args["max"], step: args["step"])
       when "$point" then return DecisionNode.point(args["instructions"], image: args["image"], units: args["units"])
       when "$box" then return DecisionNode.box(args["instructions"], image: args["image"], units: args["units"])
+      when "$booster" then return booster(args)
       when "$image" then return image(args.transform_values { |v| decode(v, ctx) })
       when "$video" then return video(args, ctx)
       when "$frame" then return frame(args)
@@ -371,6 +406,12 @@ module Conformance
 
     # Without media_type the client is given the bytes alone and detects the format.
     DecisionNode::Image.new(id, data: image_bytes(args), media_type: type)
+  end
+
+  # Booster(name, images, require, options): each only when the case gives it.
+  def booster(args)
+    kw = args.slice("images", "require", "options").to_h { |k, v| [k.to_sym, v] }
+    DecisionNode::Booster.new(args["name"], **kw)
   end
 
   # Video(id, frames, fps, start, end): fps, start and end only when the case gives them.
@@ -686,8 +727,12 @@ module Conformance
     elsif exp.key?("models")
       raise Fail, "models: expected ModelInfo entries" unless result.all?(DecisionNode::ModelInfo)
 
-      got = result.map do |m|
-        { "name" => m.name, "description" => m.description, "release_date" => m.release_date, "limits" => m.limits }
+      # The fine-tuned fields are compared where the case lists them.
+      got = result.each_with_index.map do |m, i|
+        entry = { "name" => m.name, "description" => m.description, "release_date" => m.release_date, "limits" => m.limits }
+        listed = exp["models"][i].is_a?(Hash) ? exp["models"][i] : {}
+        %w[fine_tuned base adapter_version status].each { |k| entry[k] = m.public_send(k) if listed.key?(k) }
+        entry
       end
       raise Fail, "models: expected #{short(exp['models'])}, got #{short(got)}" unless same?(exp["models"], got)
     elsif exp.key?("raw")

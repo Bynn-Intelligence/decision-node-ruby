@@ -120,12 +120,18 @@ class DecisionNode
   # images::    an Array of Image (or wire-form Hashes), up to 16.
   # videos::    an Array of Video (or wire-form Hashes), up to 4, each sent as
   #             its frames.
-  # model::     overrides the client's model for this call (nil or "" uses the client's).
+  # model::     overrides the client's model for this call (nil or "" uses the
+  #             client's). A fine-tuned model's name ("decisionnode-1.0-flash@acme/fraud",
+  #             or pinned, ".../fraud:3") is sent as given.
+  # boosters::  an Array of boosters that read the request's images before the
+  #             decision: names ("age"), Booster objects or wire-form Hashes, sent
+  #             in this order. Their readings come back in Decision#evidence.
   #
   # The request is checked before anything is sent: a fault the API would
   # refuse raises BadRequestError or ValidationError with no request made.
-  def decide(state: UNSET, questions: nil, images: nil, videos: nil, model: nil)
-    decision_call("/v1/decide", state, questions, images, videos, model).first
+  # Boosters are not checked locally: the API answers for them.
+  def decide(state: UNSET, questions: nil, images: nil, videos: nil, model: nil, boosters: nil)
+    decision_call("/v1/decide", state, questions, images, videos, model, boosters).first
   end
 
   # Runs several #decide calls, at most `concurrency` at a time. Each request is
@@ -175,37 +181,40 @@ class DecisionNode
   # Asks one `truth` question (id "check") and returns its TruthAnswer.
   # An answer that is missing or malformed raises ServerError, since a
   # TruthAnswer is promised; #decide would return an UnknownAnswer instead.
-  def check(state: UNSET, instructions: nil, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil)
+  def check(state: UNSET, instructions: nil, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil,
+            boosters: nil)
     question = Questions.truth(instructions, if_true: if_true, if_false: if_false)
-    helper_answer("check", TruthAnswer, state, question, images, videos, model)
+    helper_answer("check", TruthAnswer, state, question, images, videos, model, boosters)
   end
 
   # Asks one `choice` question (id "classify") and returns its ChoiceAnswer.
   # An answer that is missing or malformed raises ServerError.
-  def classify(state: UNSET, instructions: nil, options: nil, images: nil, videos: nil, model: nil)
-    helper_answer("classify", ChoiceAnswer, state, Questions.choice(instructions, options), images, videos, model)
+  def classify(state: UNSET, instructions: nil, options: nil, images: nil, videos: nil, model: nil, boosters: nil)
+    helper_answer("classify", ChoiceAnswer, state, Questions.choice(instructions, options), images, videos, model,
+                  boosters)
   end
 
   # Asks one `score` question (id "score") and returns its ScoreAnswer.
   # An answer that is missing or malformed raises ServerError.
-  def score(state: UNSET, instructions: nil, levels: nil, images: nil, videos: nil, model: nil)
-    helper_answer("score", ScoreAnswer, state, Questions.score(instructions, levels), images, videos, model)
+  def score(state: UNSET, instructions: nil, levels: nil, images: nil, videos: nil, model: nil, boosters: nil)
+    helper_answer("score", ScoreAnswer, state, Questions.score(instructions, levels), images, videos, model, boosters)
   end
 
   # Asks one `number` question (id "number") and returns its NumberAnswer.
   # `min`, `max` and `step` left out take the server's defaults (0, 255, 1).
   # An answer that is missing or malformed raises ServerError.
-  def number(state: UNSET, instructions: nil, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil)
+  def number(state: UNSET, instructions: nil, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil,
+             boosters: nil)
     question = Questions.number(instructions, min: min, max: max, step: step)
-    helper_answer("number", NumberAnswer, state, question, images, videos, model)
+    helper_answer("number", NumberAnswer, state, question, images, videos, model, boosters)
   end
 
   # Judges an action before it runs. Sends three questions: "risk" (score),
   # "touches_production" (truth) and "verdict" (choice of allow, confirm or block).
-  def gate(action:, context: nil, images: nil, videos: nil, model: nil)
+  def gate(action:, context: nil, images: nil, videos: nil, model: nil, boosters: nil)
     state = { "action" => action }
     state["context"] = context unless context.nil?
-    decide(state: state, questions: GATE_QUESTIONS, images: images, videos: videos, model: model)
+    decide(state: state, questions: GATE_QUESTIONS, images: images, videos: videos, model: model, boosters: boosters)
   end
 
   # Lists the models with their published limits, as ModelInfo entries. The
@@ -229,7 +238,8 @@ class DecisionNode
 
   # Opens a session (`POST /v1/sessions`) and returns a Session: one state and
   # a fixed set of questions, answered again for every frame sent on its
-  # socket. Only the arguments given are sent, and `model` always is.
+  # socket. Only the arguments given are sent, and `model` always is. A
+  # session takes no boosters.
   #
   # A 429 `session_limit_exceeded` (the key holds its most open sessions) is
   # never retried and raises SessionLimitError, a RateLimitError.
@@ -366,7 +376,7 @@ class DecisionNode
   # A request checked and ready to send: the parts of its body, with its
   # images still to be placed (inline or uploaded) when it is sent. Videos
   # are in their wire form already: frames always go inline.
-  Prepared = Struct.new(:state, :questions, :images, :videos, :model, :encoded)
+  Prepared = Struct.new(:state, :questions, :images, :videos, :model, :encoded, :boosters)
   private_constant :Prepared
 
   def checked_base_url(url)
@@ -452,7 +462,7 @@ class DecisionNode
     value.nil? || value.empty? ? nil : value
   end
 
-  DECIDE_ARGS = %i[state questions images videos model].freeze
+  DECIDE_ARGS = %i[state questions images videos model boosters].freeze
   private_constant :DECIDE_ARGS
 
   def decide_args(item)
@@ -548,34 +558,48 @@ class DecisionNode
     videos.empty? ? nil : videos.map { |v| v.is_a?(Video) ? v.to_h : v }
   end
 
+  # The wire form of a request's boosters in the order given, or nil when it
+  # names none (nil or an empty Array), so the body then has no `boosters` key.
+  # A Booster becomes its wire form; anything else is sent as given, since
+  # boosters are the API's to judge.
+  def booster_wires(boosters)
+    return nil if boosters.nil? || (boosters.is_a?(Array) && boosters.empty?)
+    return boosters unless boosters.is_a?(Array)
+
+    boosters.map { |b| b.is_a?(Booster) ? b.to_h : b }
+  end
+
   # Checks a request and keeps what is needed to send it. A request without
   # local images is encoded once here.
-  def prepared_call(state: UNSET, questions: nil, images: nil, videos: nil, model: nil)
+  def prepared_call(state: UNSET, questions: nil, images: nil, videos: nil, model: nil, boosters: nil)
     qs = prepared_questions(questions)
     imgs = prepared_images(images)
     vids = prepared_videos(videos)
     state = state.equal?(UNSET) || state.nil? ? "" : state
     model = given(model) || @model
-    check_body(body_for(model, state, qs, nil), imgs, vids)
+    boosted = booster_wires(boosters)
+    check_body(body_for(model, state, qs, nil, nil, boosted), imgs, vids)
     wired = video_wires(vids)
     if imgs.any? { |img| img.is_a?(Image) && img.local? }
-      encode(body_for(model, state, qs, nil, wired)) # a value that cannot be serialised fails here
-      Prepared.new(state, qs, imgs, wired, model, nil)
+      encode(body_for(model, state, qs, nil, wired, boosted)) # a value that cannot be serialised fails here
+      Prepared.new(state, qs, imgs, wired, model, nil, boosted)
     else
       wires = imgs.empty? ? nil : imgs.map { |img| img.is_a?(Image) ? img.to_h : img }
-      Prepared.new(state, qs, imgs, wired, model, encode(body_for(model, state, qs, wires, wired)))
+      Prepared.new(state, qs, imgs, wired, model, encode(body_for(model, state, qs, wires, wired, boosted)), boosted)
     end
   end
 
-  def body_for(model, state, questions, images, videos = nil)
+  def body_for(model, state, questions, images, videos = nil, boosters = nil)
     body = { "model" => model, "state" => state, "questions" => questions }
     body["images"] = images unless images.nil?
     body["videos"] = videos unless videos.nil?
+    body["boosters"] = boosters unless boosters.nil?
     body
   end
 
-  def decision_call(path, state, questions, images, videos, model)
-    call = prepared_call(state: state, questions: questions, images: images, videos: videos, model: model)
+  def decision_call(path, state, questions, images, videos, model, boosters)
+    call = prepared_call(state: state, questions: questions, images: images, videos: videos, model: model,
+                         boosters: boosters)
     send_prepared(path, call)
   end
 
@@ -590,7 +614,7 @@ class DecisionNode
 
     2.times do |attempt|
       wires, placed = image_wires(call.images)
-      data = encode(body_for(call.model, call.state, call.questions, wires.empty? ? nil : wires, call.videos))
+      data = encode(body_for(call.model, call.state, call.questions, wires.empty? ? nil : wires, call.videos, call.boosters))
       begin
         body, headers, status = request("POST", path, data, encoded: true)
         return [Decision.new(body, headers), status]
@@ -604,8 +628,8 @@ class DecisionNode
 
   # The typed answer a helper promises, or a ServerError when it is missing
   # or malformed.
-  def helper_answer(id, klass, state, question, images, videos, model)
-    decision, status = decision_call("/v1/decide", state, { id => question }, images, videos, model)
+  def helper_answer(id, klass, state, question, images, videos, model, boosters)
+    decision, status = decision_call("/v1/decide", state, { id => question }, images, videos, model, boosters)
     answer = decision.answers[id]
     return answer if answer.is_a?(klass)
 
@@ -677,20 +701,23 @@ class DecisionNode
     Checks.lines!(requests, allow_empty: allow_empty, limits: limits_for(nil))
     requests.each_with_index do |req, i|
       args, questions, images, videos = line_parts(req, i)
-      check_body(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil), images, videos)
+      check_body(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil, nil,
+                          booster_wires(args["boosters"])), images, videos)
     end
     nil
   end
 
   # One JSON Lines line: custom_id, model (always), state ("" when absent),
-  # questions, images, videos, then any other field as given.
+  # questions, images, videos, boosters, then any other field as given.
   def batch_line(req, index)
     args, questions, images, videos = line_parts(req, index)
     line = { "custom_id" => args["custom_id"], "model" => given(args["model"]) || @model,
              "state" => args["state"].nil? ? "" : args["state"], "questions" => questions }
     line["images"] = image_wires(images).first unless images.empty?
     line["videos"] = video_wires(videos) unless videos.empty?
-    args.each { |k, v| line[k] = v unless line.key?(k) || %w[images videos].include?(k) }
+    boosted = booster_wires(args["boosters"])
+    line["boosters"] = boosted unless boosted.nil?
+    args.each { |k, v| line[k] = v unless line.key?(k) || %w[images videos boosters].include?(k) }
     "#{encode(line)}\n"
   end
 

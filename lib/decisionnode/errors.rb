@@ -8,12 +8,15 @@ class DecisionNode
   # `detail` when it is a string), or the client's description when there was
   # no response. It is an empty string when the server sent none. `reason` is
   # the server's explanation in words, from the `x-decisionnode-error` header.
-  # The report Ruby prints for an uncaught error adds the class, status and
+  # `boosters` is the `x-decisionnode-boosters` header of a request that
+  # named boosters, as booster name to BoosterStatus in the request's order
+  # (an empty Hash when there is none), so a caller can see which required
+  # booster failed. The report Ruby prints for an uncaught error adds the class, status and
   # reason.
   class DecisionNodeError < StandardError
     include DecisionResult
 
-    attr_reader :status, :error_type, :request_id, :reason, :body, :headers
+    attr_reader :status, :error_type, :request_id, :reason, :body, :headers, :boosters
 
     def initialize(message = nil, status: nil, error_type: nil, request_id: nil, reason: nil, body: nil, headers: nil)
       @status = status
@@ -22,6 +25,7 @@ class DecisionNode
       @reason = reason
       @body = body
       @headers = headers || {}
+      @boosters = BoosterStatus.parse(@headers["x-decisionnode-boosters"])
       super(message.nil? ? "" : message.to_s)
     end
 
@@ -51,7 +55,9 @@ class DecisionNode
   # 402: the account has no credit left.
   class InsufficientCreditError < DecisionNodeError; end
 
-  # 403 that is not a refusal.
+  # 403 that is not a refusal: the workspace may not do this, for example use
+  # a booster turned off for it (`booster_not_enabled`), or it is suspended.
+  # `error_type` tells them apart.
   class PermissionDeniedError < DecisionNodeError; end
 
   # 403 with `error_type` `refusal_error`: the request was refused under the usage policy.
@@ -98,7 +104,9 @@ class DecisionNode
   # many open sessions as it may. Never retried.
   class SessionLimitError < RateLimitError; end
 
-  # 529: the service is overloaded.
+  # 529: the service is overloaded, or (`error_type` `booster_unavailable`) a
+  # booster the request required failed or did not answer in time. Retried
+  # like every 529.
   class OverloadedError < DecisionNodeError
     # Seconds to wait before trying again, or nil.
     attr_reader :retry_after

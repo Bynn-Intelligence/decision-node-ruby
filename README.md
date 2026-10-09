@@ -109,13 +109,13 @@ The client checks its arguments when it is made and raises `ArgumentError` for a
 
 | Method | Returns |
 |---|---|
-| `decide(state:, questions:, images: nil, videos: nil, model: nil)` | A `DecisionNode::Decision` |
+| `decide(state:, questions:, images: nil, videos: nil, model: nil, boosters: nil)` | A `DecisionNode::Decision` |
 | `decide_many(requests, concurrency: 8)` | One `DecisionNode::DecisionResult` per request, in input order: a `Decision`, or the `DecisionNodeError` that request ended with |
-| `check(state:, instructions:, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil)` | A `TruthAnswer` |
-| `classify(state:, instructions:, options:, images: nil, videos: nil, model: nil)` | A `ChoiceAnswer` |
-| `score(state:, instructions:, levels:, images: nil, videos: nil, model: nil)` | A `ScoreAnswer` |
-| `number(state:, instructions:, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil)` | A `NumberAnswer` |
-| `gate(action:, context: nil, images: nil, videos: nil, model: nil)` | A `Decision` with the answers `risk` (score), `touches_production` (truth) and `verdict` (choice of `allow`, `confirm`, `block`) |
+| `check(state:, instructions:, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil, boosters: nil)` | A `TruthAnswer` |
+| `classify(state:, instructions:, options:, images: nil, videos: nil, model: nil, boosters: nil)` | A `ChoiceAnswer` |
+| `score(state:, instructions:, levels:, images: nil, videos: nil, model: nil, boosters: nil)` | A `ScoreAnswer` |
+| `number(state:, instructions:, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil, boosters: nil)` | A `NumberAnswer` |
+| `gate(action:, context: nil, images: nil, videos: nil, model: nil, boosters: nil)` | A `Decision` with the answers `risk` (score), `touches_production` (truth) and `verdict` (choice of `allow`, `confirm`, `block`) |
 | `models` | An Array of `DecisionNode::ModelInfo` |
 | `upload(images)` | One upload id per image (see "Images") |
 | `open_session(questions:, state: nil, instructions: nil, model: nil, window: nil, ttl_seconds: nil)` | A `DecisionNode::Session` (see "Sessions") |
@@ -153,18 +153,18 @@ end
 
 | Class | Fields |
 |---|---|
-| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `usage.video_frames`, `usage.video_seconds`, `warnings`, `request_id`, `latency_ms`, `safety`, `raw` |
+| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `usage.video_frames`, `usage.video_seconds`, `usage.booster_tokens`, `usage.boosters`, `evidence` (see "Boosters"), `warnings`, `request_id`, `latency_ms`, `safety`, `raw` |
 | `TruthAnswer` | `truth` |
 | `ChoiceAnswer` | `choice`, `confidence`, `probabilities` (by option name, exactly as sent) |
 | `ScoreAnswer` | `score`, `confidence`, `probabilities` (by level index, an Integer), `legend` (level index to the level as sent) |
 | `NumberAnswer` | `number` (the most probable value of the grid), `expected` (the probability-weighted mean), `confidence` (the probability of `number`), `probabilities` (by the value exactly as the server wrote it, `"7"`, `"3.5"`) |
 | `PointAnswer` | `x`, `y`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
 | `BoxAnswer` | `x1`, `y1`, `x2`, `y2`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
-| `ModelInfo` | `name`, `description`, `release_date`, `limits` (every other field of the entry), and `sessions` and `batch`, the session and Batch API limits; `limit("sessions", "max_per_key")` reads one |
+| `ModelInfo` | `name`, `description`, `release_date`, `limits` (every other field of the entry), and `sessions` and `batch`, the session and Batch API limits; `limit("sessions", "max_per_key")` reads one. A fine-tuned model's entry also has `fine_tuned`, `base`, `adapter_version` and `status` (see "Fine-tuned models") |
 
 Answers are read by question id. An answer of a type this version does not know is returned as a `DecisionNode::UnknownAnswer` with its `type` and `raw` fields, so the rest of the decision still parses. So is an answer of a known type with a field missing or of the wrong type (a `truth` answer without a number in `truth`, for example): the decision does not fail. All answer classes derive from `DecisionNode::Answer`.
 
-A token count or `latency_ms` the server did not send is `nil`, never 0. So are `usage.video_frames` and `usage.video_seconds` for a request without videos; `warnings` is then an empty Array.
+A token count or `latency_ms` the server did not send is `nil`, never 0. So are `usage.video_frames` and `usage.video_seconds` for a request without videos (`warnings` is then an empty Array), and `evidence`, `usage.booster_tokens` and `usage.boosters` for a request without boosters.
 
 ## Images
 
@@ -279,6 +279,90 @@ Videos go with `decide`, the helpers, `decide_many` and batch requests; sessions
 The SDK checks a video's form before sending, in the API's order and words: an id, ids unique across images and videos, a non-empty frame list, each frame's time a number of at least 0 and larger than the one before, a JPEG, PNG or WebP media type, `fps` above 0 and at most 4, `start` and `end` at least 0, and `end` after `start`. A fault raises `BadRequestError` with `error_type` `api_usage_error`. More than 4 videos raises the API's `ValidationError`, a `too_long` entry on the videos. How many frames a request may hold, a frame's bytes and size, and whether the window holds a frame are the API's to judge.
 
 To turn a video file into frames, use the `dn` command line: `dn truth "Does a person fall?" --video dock.mp4` samples the file on your machine and sends only the frames.
+
+## Boosters
+
+A booster is a specialist model that reads the request's images before the decision. Its reading is added to what the model sees as evidence and comes back in the response. The model still answers every question: a booster never answers or adds one, and a request without boosters is answered exactly as before.
+
+| Booster | Reads | Tells the model |
+|---|---|---|
+| `age` | A picture of a person | How old the person is, with a range and a confidence (the largest face is read) |
+| `ai_generated` | Any picture | How likely the picture was made by an image generator, which generator most likely, and whether the file carries Content Credentials (C2PA) and who signed them |
+
+```ruby
+d = dn.decide(
+  images: [
+    DecisionNode::Image.new("a1b2", path: "selfie.jpg"),
+    DecisionNode::Image.new("c3d4", url: "https://files.example.com/c3d4.jpg")
+  ],
+  boosters: [
+    "age",
+    DecisionNode::Booster.new("ai_generated", images: ["c3d4"], require: true)
+  ],
+  questions: {
+    adult: DecisionNode.truth("Is the person in the first picture an adult?"),
+    synthetic: DecisionNode.truth("Is the second picture AI-generated?")
+  }
+)
+
+d["adult"].truth                                    # => 0.97
+age = d.evidence["age"]                             # a DecisionNode::Evidence
+age.status                                          # => "ok"
+age.results.first.age_years                         # => 27, with .low, .high, .confidence and .faces
+d.evidence["ai_generated"].results.first.generated  # => 0.93
+d.usage.booster_tokens                              # the readings' share of input_tokens
+d.usage.boosters                                    # the booster calls billed
+```
+
+`boosters:` takes a name (`"age"`), a `DecisionNode::Booster.new(name, images: nil, require: nil, options: nil)` or a Hash in the API's wire form, up to 4, each booster at most once, sent in the order given. Each argument of a `Booster` is sent only when given:
+
+| Argument | Meaning |
+|---|---|
+| `images` | The ids of the request's images the booster reads. Left out: every image of the request. |
+| `require` | `true`: a booster that fails or does not answer in time fails the request with the 529 `booster_unavailable`, which is retried like every 529. Left out or `false`: the decision runs without that reading, and `evidence` says why. |
+| `options` | The booster's settings, a Hash. |
+
+Boosters go with `decide`, the helpers, `decide_many` and batch requests; sessions take none. They read images in every form: a URL, inline bytes or an upload. Without `boosters:` (or with an empty Array) the request has no `boosters` field at all. Nothing about boosters is checked before sending: the API answers a malformed list, an unknown name and a booster turned off before any booster runs and before any charge.
+
+`d.evidence` holds one `DecisionNode::Evidence` per booster the request named, by name in the request's order, and is `nil` when it named none:
+
+| Class | Fields |
+|---|---|
+| `Evidence` | `version` (the booster version that read), `status` (`ok`, `timeout`, `error` or `skipped`, when none of the request's images is one it reads), `latency_ms`, `results` (one reading per image read; empty unless `status` is `ok`), `raw` |
+| `AgeReading` | `image`, `faces` (how many faces were found), and `age_years`, `low`, `high`, `confidence`, each `nil` when `faces` is 0 |
+| `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, from the file's Content Credentials), `top_generator` (`name` and `probability`), `c2pa_signer` (who signed the Content Credentials, or `nil`) |
+| `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision still parses. |
+
+Each booster call billed costs USD 0.002, drawn from the prepaid balance with the request's tokens: one call per booster and image read with status `ok`. A booster that timed out or failed is free, a picture the same booster read for your workspace in the last hour is not billed again, and a refused request bills none. The readings' tokens are input tokens at the model's price.
+
+| Status | `error_type` | Error | When |
+|---|---|---|---|
+| 400 | `api_usage_error` | `BadRequestError` | `boosters` malformed: more than 4 entries, a booster named twice, an entry that is neither a name nor a Hash with `booster`, a key in `options`. The reason is in `reason`. |
+| 400 | `booster_unknown` | `BadRequestError` | A name that is not a booster |
+| 400 | `booster_input_mismatch` | `BadRequestError` | A booster that reads images on a request without any, or an `images` entry that is not an image of the request |
+| 403 | `booster_not_enabled` | `PermissionDeniedError` | The booster is turned off for the workspace (an owner or admin turns boosters on and off in the console) |
+| 529 | `booster_unavailable` | `OverloadedError` | A booster with `require: true` failed or did not answer in time; retried |
+
+Every error carries `boosters`, the `x-decisionnode-boosters` header as booster name to `DecisionNode::BoosterStatus` (`status`, `latency_ms`) in the request's order, so you can see which required booster failed:
+
+```ruby
+begin
+  dn.decide(images: images, questions: questions, boosters: [DecisionNode::Booster.new("ai_generated", require: true)])
+rescue DecisionNode::OverloadedError => e
+  e.boosters["ai_generated"]&.status # => "timeout"
+end
+```
+
+## Fine-tuned models
+
+A model your workspace fine-tuned in the console is called by its name in `model:`, by the keys of that workspace, and answers like its base model: the same question types, answers, limits and errors.
+
+```ruby
+d = dn.decide(state: claim, questions: questions, model: "decisionnode-1.0-flash@acme/fraud")
+d.model # => "decisionnode-1.0-flash@acme/fraud:3", the version that answered
+```
+
+The name is `<base>@<workspace>/<name>`, which means the version deployed most recently, or `<base>@<workspace>/<name>:<n>` for one version. The SDK sends it as given; a name that does not exist, is not deployed or belongs to another workspace raises the API's `BadRequestError` ("Unknown model: ..."). `Decision#model` is always the pinned name with its version. `models` lists your workspace's fine-tuned models beside the catalogue, each `ModelInfo` with `fine_tuned` (`true`), `base` (the base model), `adapter_version` (its version number) and `status` (`deployed`, which answers decisions, or `ready`, trained but not deployed); these are `nil` on a catalogue model.
 
 ## Checked before sending
 
@@ -431,18 +515,18 @@ The body then carries one more top-level field, `safety`, read from `decision.ra
 
 ## Errors
 
-Every error derives from `DecisionNode::DecisionNodeError`, which has `status`, `error_type`, `message`, `request_id` and `reason`. The error's `message` is the server's message, or the SDK's description when no response arrived; it is an empty string when the server sent none. `reason` is the server's explanation in words from the `x-decisionnode-error` header, for example `question 'q': a score takes up to 10 levels, got 11`. The report Ruby prints for an uncaught error adds the class, status and reason.
+Every error derives from `DecisionNode::DecisionNodeError`, which has `status`, `error_type`, `message`, `request_id`, `reason` and `boosters` (see "Boosters"; an empty Hash for a request without boosters). The error's `message` is the server's message, or the SDK's description when no response arrived; it is an empty string when the server sent none. `reason` is the server's explanation in words from the `x-decisionnode-error` header, for example `question 'q': a score takes up to 10 levels, got 11`. The report Ruby prints for an uncaught error adds the class, status and reason.
 
 | Status | Error | Extra fields |
 |---|---|---|
 | 400 | `BadRequestError`; `ContextLimitError` when `error_type` is `max_tokens_exceeded` | |
 | 401 | `AuthenticationError` | |
 | 402 | `InsufficientCreditError` | |
-| 403 | `RefusalError` when the request was refused, else `PermissionDeniedError` | `category` (`harm` or `self_harm`), `safety` |
+| 403 | `RefusalError` when the request was refused (`error_type` `refusal_error`), else `PermissionDeniedError` (a booster turned off for the workspace, a suspended workspace; `error_type` tells them apart) | `category` (`harm` or `self_harm`), `safety` |
 | 404 | `NotFoundError` | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError`; `SessionLimitError` when `error_type` is `session_limit_exceeded` | `retry_after` (seconds) |
-| 529 | `OverloadedError` | `retry_after` (seconds) |
+| 529 | `OverloadedError`, also for `booster_unavailable` (a required booster failed) | `retry_after` (seconds) |
 | other 5xx, a 2xx whose body is not JSON, or a helper's missing or malformed answer | `ServerError` | |
 | any other status (a 3xx, 405, 409, 410, 408 once its retries are spent) | `DecisionNodeError` itself, with `status` | |
 | no response | `ConnectionError`, `TimeoutError` | |
@@ -524,9 +608,9 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.10) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.11) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
-This gem implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
+This gem implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 
 ## License
 
