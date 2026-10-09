@@ -17,7 +17,7 @@ Implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERS
 - Fine-tuned models: a fine-tuned model's name (`decisionnode-1.0-flash@acme/fraud`, or pinned with `:3`) is sent as given, and `Decision#model` is the pinned name that answered. `ModelInfo#fine_tuned`, `#base`, `#adapter_version` and `#status` (and `fine_tuned?`), `nil` on a catalogue model.
 - `RequestTooLargeError`, for the API's 413 on any call (never retried) and raised before sending when the encoded body is over 26,214,400 bytes (25 MiB), the API's limit: on `decide`, the helpers, `decide_many` (for the whole call, before anything is sent), each batch line as sent and `check_request`. An image that would be uploaded counts by its upload id, so nothing is uploaded to measure. `decide_raw` sends its body as given.
 - The fallback: `fallback:` (`true` or `false`, sent only when given) on `decide`, the helpers, `decide_many` requests, batch requests and `check_request`; any other value is an `ArgumentError`. `Decision#fallback` is a `DecisionNode::Fallback` (`served_model`, `requested_model`) from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers when another model answered in place of the one asked for, `nil` otherwise; a batch result's decision reads them from its line's headers.
-- The README documents boosters, their price and errors, fine-tuned model names and the fallback.
+- The README documents boosters, how they are billed and their errors, fine-tuned model names and the fallback.
 
 ### Changed
 
