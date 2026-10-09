@@ -225,7 +225,7 @@ module Conformance
   def norm_evidence(evidence)
     evidence&.transform_values do |e|
       { "version" => e.version, "status" => e.status, "latency_ms" => e.latency_ms,
-        "results" => e.results.map { |r| norm_reading(r) } }
+        "billed_calls" => e.billed_calls, "results" => e.results.map { |r| norm_reading(r) } }
     end
   end
 

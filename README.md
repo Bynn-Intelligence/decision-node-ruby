@@ -323,7 +323,7 @@ d = dn.decide(
 )
 ```
 
-`DecisionNode::Booster.new(name, images: nil, require: nil, options: nil)` is sent as `{"name": "ai_generated", "images": ["c3d4"], "require": true}`, each argument only when given; a Hash in that form works too:
+`DecisionNode::Booster.new(name, images: nil, require: nil, options: nil)` is sent as `{"name": "ai_generated", "images": ["c3d4"], "require": true}`, each argument only when given; a Hash in that form works too. A `Booster` with no argument set is sent as its name, so the request stays the plain list:
 
 | Argument | Meaning |
 |---|---|
@@ -337,7 +337,7 @@ Boosters go with `decide`, the helpers, `decide_many` and batch requests; sessio
 
 | Class | Fields |
 |---|---|
-| `Evidence` | `version` (the booster version that read), `status` (`ok`, `timeout`, `error` or `skipped`, when none of the request's images is one it reads), `latency_ms`, `results` (one reading per image read; empty unless `status` is `ok`), `raw` |
+| `Evidence` | `version` (the booster version that read), `status` (`ok`, `timeout`, `error` or `skipped`, when none of the request's images is one it reads), `latency_ms`, `billed_calls` (the calls of this booster billed on this request; a picture it read for your workspace in the last hour is not billed again), `results` (one reading per image read; empty unless `status` is `ok`), `raw` |
 | `AgeReading` | `image`, `faces` (how many faces were found), and `age_years`, `low`, `high`, `confidence`, each `nil` when `faces` is 0 |
 | `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, when the file's trusted Content Credentials declare it generated or edited by AI), `top_generator` (`name` and `probability` of the likeliest generator when the reading says likely generated; `nil` otherwise, and always on a `c2pa` reading), `c2pa_signer` (who signed the file's Content Credentials when they are trusted, else `nil`), `c2pa` (`"untrusted"` when the file carries Content Credentials that validate but are not trusted, which change nothing in the reading; else `nil`) |
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision still parses. |

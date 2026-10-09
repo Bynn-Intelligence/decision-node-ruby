@@ -23,6 +23,16 @@ class BoostersTest < Minitest::Test
     assert_equal({ "name" => "ai_generated", "images" => ["c3d4"], "require" => true, "options" => { "k" => 1 } },
                  DecisionNode::Booster.new("ai_generated", images: ["c3d4"], require: true, options: { "k" => 1 }).to_h)
     assert_equal({ "name" => "age", "require" => false }, DecisionNode::Booster.new("age", require: false).to_h)
+    # Sent: the bare name when no setting is given, else the object form.
+    assert_equal "age", DecisionNode::Booster.new(:age).wire
+    assert_equal({ "name" => "age", "require" => false }, DecisionNode::Booster.new("age", require: false).wire)
+  end
+
+  def test_a_booster_with_no_setting_is_sent_as_its_name
+    http = FakeHTTP.new(ok)
+    client(http).decide(state: "s", questions: Q,
+                        boosters: [DecisionNode::Booster.new("age"), DecisionNode::Booster.new("ai_generated")])
+    assert_equal %w[age ai_generated], http.calls.first.json["boosters"]
   end
 
   def test_boosters_are_sent_in_order_after_the_other_fields
@@ -144,7 +154,7 @@ class BoostersTest < Minitest::Test
       "answers" => { "q" => { "type" => "truth", "truth" => 0.97 } },
       "evidence" => {
         "age" => {
-          "version" => "age-v3", "status" => "ok", "latency_ms" => 212,
+          "version" => "age-v3", "status" => "ok", "latency_ms" => 212, "billed_calls" => 2,
           "results" => [
             { "image" => "a1b2", "age_years" => 27, "low" => 22, "high" => 33, "confidence" => 0.81, "faces" => 1 },
             { "image" => "c3d4", "faces" => 0 }
@@ -175,7 +185,9 @@ class BoostersTest < Minitest::Test
 
     age = d.evidence["age"]
     assert_instance_of DecisionNode::Evidence, age
-    assert_equal ["age-v3", "ok", 212], [age.version, age.status, age.latency_ms]
+    assert_equal ["age-v3", "ok", 212, 2], [age.version, age.status, age.latency_ms, age.billed_calls]
+    # A server that does not send billed_calls: nil, never 0.
+    assert_nil d.evidence["ai_generated"].billed_calls
     first, second = age.results
     assert_instance_of DecisionNode::AgeReading, first
     assert_equal ["a1b2", 1, 27, 22, 33, 0.81], [first.image, first.faces, first.age_years, first.low, first.high, first.confidence]

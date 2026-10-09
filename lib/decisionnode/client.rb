@@ -575,7 +575,7 @@ class DecisionNode
     return nil if boosters.nil? || (boosters.is_a?(Array) && boosters.empty?)
     return boosters unless boosters.is_a?(Array)
 
-    boosters.map { |b| b.is_a?(Booster) ? b.to_h : b }
+    boosters.map { |b| b.is_a?(Booster) ? b.wire : b }
   end
 
   # The fallback argument: nil (left out of the request), true or false.

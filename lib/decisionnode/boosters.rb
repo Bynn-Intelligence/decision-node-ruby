@@ -33,7 +33,7 @@ class DecisionNode
       @require
     end
 
-    # The booster's wire form: `images`, `require` and `options` only when given.
+    # The booster's object form: `images`, `require` and `options` only when given.
     def to_h
       wire = { "name" => name }
       wire["images"] = images unless images.nil?
@@ -42,9 +42,15 @@ class DecisionNode
       wire
     end
 
+    # The booster as it is sent: its name alone when no setting is given, so
+    # a list of such boosters is the plain list of names; else #to_h.
+    def wire
+      images.nil? && @require.nil? && options.nil? ? name : to_h
+    end
+
     # The wire form as JSON, wherever the Booster sits in a value.
     def to_json(*args)
-      to_h.to_json(*args)
+      wire.to_json(*args)
     end
 
     def inspect
@@ -86,6 +92,10 @@ class DecisionNode
     attr_reader :status
     # How long the booster took, in milliseconds, as sent.
     attr_reader :latency_ms
+    # The calls of this booster billed on this request (a picture it read for
+    # the workspace in the last hour is not billed again), or nil when the
+    # server did not send it.
+    attr_reader :billed_calls
     # One reading per image read: an AgeReading, an AiGeneratedReading or an
     # UnknownReading. Empty unless `status` is "ok".
     attr_reader :results
@@ -106,6 +116,7 @@ class DecisionNode
       @version = entry["version"].is_a?(String) ? entry["version"] : nil
       @status = entry["status"].is_a?(String) ? entry["status"] : nil
       @latency_ms = entry["latency_ms"].is_a?(Numeric) ? entry["latency_ms"] : nil
+      @billed_calls = entry["billed_calls"].is_a?(Integer) ? entry["billed_calls"] : nil
       results = entry["results"].is_a?(Array) ? entry["results"] : []
       @results = results.map { |r| Reading.from(booster, r) }.freeze
     end
