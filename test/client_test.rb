@@ -377,7 +377,7 @@ class ClientTest < Minitest::Test
     end
     expected = %w[DecisionNodeError BadRequestError ContextLimitError AuthenticationError InsufficientCreditError
                   PermissionDeniedError RefusalError NotFoundError ValidationError RateLimitError OverloadedError
-                  ServerError ConnectionError TimeoutError SessionLimitError]
+                  ServerError ConnectionError TimeoutError SessionLimitError RequestTooLargeError]
     assert_equal expected.sort, errors.map(&:to_s).sort
     # The one subclass spec 1.1 adds is a RateLimitError, so a rescue of 429s catches it.
     assert_operator DecisionNode::SessionLimitError, :<, DecisionNode::RateLimitError

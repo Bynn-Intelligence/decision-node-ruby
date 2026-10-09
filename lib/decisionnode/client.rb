@@ -581,11 +581,17 @@ class DecisionNode
     check_body(body_for(model, state, qs, nil, nil, boosted), imgs, vids)
     wired = video_wires(vids)
     if imgs.any? { |img| img.is_a?(Image) && img.local? }
-      encode(body_for(model, state, qs, nil, wired, boosted)) # a value that cannot be serialised fails here
+      # The body as it will be sent, an image to upload named by a placeholder
+      # id of the real length, so nothing is uploaded to measure it. A value
+      # that cannot be serialised fails here too.
+      projected, = image_wires(imgs, project: true)
+      Checks.body_size!(encode(body_for(model, state, qs, projected, wired, boosted)))
       Prepared.new(state, qs, imgs, wired, model, nil, boosted)
     else
       wires = imgs.empty? ? nil : imgs.map { |img| img.is_a?(Image) ? img.to_h : img }
-      Prepared.new(state, qs, imgs, wired, model, encode(body_for(model, state, qs, wires, wired, boosted)), boosted)
+      data = encode(body_for(model, state, qs, wires, wired, boosted))
+      Checks.body_size!(data)
+      Prepared.new(state, qs, imgs, wired, model, data, boosted)
     end
   end
 
@@ -696,7 +702,8 @@ class DecisionNode
   end
 
   # The requests of one create or add call, every line checked before any is
-  # sent: the custom_id rules, then each line as a decide request.
+  # sent: the custom_id rules, then each line as a decide request, then each
+  # line as it would be sent against the body limit.
   def check_lines(requests, allow_empty:)
     Checks.lines!(requests, allow_empty: allow_empty, limits: limits_for(nil))
     requests.each_with_index do |req, i|
@@ -704,21 +711,28 @@ class DecisionNode
       check_body(body_for(given(args["model"]) || @model, args["state"].nil? ? "" : args["state"], questions, nil, nil,
                           booster_wires(args["boosters"])), images, videos)
     end
+    requests.each_with_index { |req, i| Checks.body_size!(encode(line_for(req, i, project: true))) }
     nil
   end
 
   # One JSON Lines line: custom_id, model (always), state ("" when absent),
   # questions, images, videos, boosters, then any other field as given.
   def batch_line(req, index)
+    "#{encode(line_for(req, index))}\n"
+  end
+
+  # A batch line as a Hash. With project: true nothing is uploaded: an image
+  # to upload is named by a placeholder id of the real length.
+  def line_for(req, index, project: false)
     args, questions, images, videos = line_parts(req, index)
     line = { "custom_id" => args["custom_id"], "model" => given(args["model"]) || @model,
              "state" => args["state"].nil? ? "" : args["state"], "questions" => questions }
-    line["images"] = image_wires(images).first unless images.empty?
+    line["images"] = image_wires(images, project: project).first unless images.empty?
     line["videos"] = video_wires(videos) unless videos.empty?
     boosted = booster_wires(args["boosters"])
     line["boosters"] = boosted unless boosted.nil?
     args.each { |k, v| line[k] = v unless line.key?(k) || %w[images videos boosters].include?(k) }
-    "#{encode(line)}\n"
+    line
   end
 
   # ---- transport
@@ -943,6 +957,7 @@ class DecisionNode
         PermissionDeniedError.new(message, **kw)
       end
     when 404 then NotFoundError.new(message, **kw)
+    when 413 then RequestTooLargeError.new(message, **kw)
     when 422 then ValidationError.new(message, entries: entries, **kw)
     when 429
       klass = error_type == "session_limit_exceeded" ? SessionLimitError : RateLimitError

@@ -255,7 +255,7 @@ class Spec11Test < Minitest::Test
 
   def test_run_batch_cancels_the_draft_when_an_add_fails
     http = FakeHTTP.new(FakeHTTP.json(201, batch), FakeHTTP.json(413, { "detail" => "too large" }), FakeHTTP.json(200, batch("cancelled")))
-    assert_raises(DecisionNode::DecisionNodeError) { client(http).run_batch([line("a")], poll_interval: 10) }
+    assert_raises(DecisionNode::RequestTooLargeError) { client(http).run_batch([line("a")], poll_interval: 10) }
     assert_equal "https://api.example.test/v1/batches/batch_01J9ZB8Q3T/cancel", http.calls.last.url
   end
 end

@@ -67,6 +67,11 @@ class DecisionNode
     # once more.
     STALE_UPLOAD = %w[upload_expired upload_consumed upload_not_found upload_incomplete].freeze
 
+    # An upload id of the API's length (36 characters), naming an image that
+    # would be uploaded when a body is measured before anything is sent.
+    UPLOAD_ID_PLACEHOLDER = "upl_#{'0' * 32}".freeze
+    private_constant :UPLOAD_ID_PLACEHOLDER
+
     # Uploads every image, whatever its size, and returns one upload id per
     # image (from the cache when the same bytes were uploaded before). URL
     # images and upload ids cannot be uploaded and raise ArgumentError.
@@ -104,8 +109,9 @@ class DecisionNode
     # The wire forms of a request's images and the upload ids the SDK placed in
     # them. URLs and upload ids go as given; a cached upload by its id whatever
     # its size; the other local images inline when all the local images total
-    # under the inline threshold, else uploaded.
-    def image_wires(images)
+    # under the inline threshold, else uploaded. With project: true nothing is
+    # uploaded: an image that would be is named by UPLOAD_ID_PLACEHOLDER.
+    def image_wires(images, project: false)
       wires = Array.new(images.size)
       placed = []
       pending = []
@@ -131,7 +137,7 @@ class DecisionNode
       return [wires, placed] if pending.empty?
 
       if total >= @inline_threshold
-        ids = upload_images(pending.map { |i| images[i] })
+        ids = project ? [UPLOAD_ID_PLACEHOLDER] * pending.size : upload_images(pending.map { |i| images[i] })
         pending.each_with_index do |i, j|
           wires[i] = images[i].upload_wire(ids[j])
           placed << ids[j]

@@ -24,6 +24,11 @@ class DecisionNode
     MAX_SCORE_LEVELS = 10
     MAX_GRID_VALUES = 4_096
     MAX_NESTING = 128
+    # The API's request body limit, 25 MiB, counted on the encoded body.
+    MAX_BODY_BYTES = 26_214_400
+    BODY_TOO_LARGE = "The request body is over 26,214,400 bytes (25 MiB). Send large images as uploads " \
+                     "(POST /v1/uploads) and name them by upload_id."
+    private_constant :MAX_BODY_BYTES, :BODY_TOO_LARGE
     MAX_WINDOW = 64
     MAX_TTL_SECONDS = 3_600
     MAX_SEQ = (2**53) - 1
@@ -102,6 +107,16 @@ class DecisionNode
       raise BadRequestError.new("Invalid request.", error_type: "api_usage_error",
                                                     reason: "the request nests #{depth} objects and arrays inside each other; " \
                                                             "the limit is #{MAX_NESTING}")
+    end
+
+    # The encoded body, exactly as it would be sent, against the API's body
+    # limit: RequestTooLargeError when it is over.
+    def body_size!(data)
+      size = data.bytesize
+      return if size <= MAX_BODY_BYTES
+
+      raise RequestTooLargeError.new(BODY_TOO_LARGE, error_type: "request_too_large_error",
+                                                     reason: "the body is #{size} bytes; the limit is #{MAX_BODY_BYTES}")
     end
 
     # ---- images

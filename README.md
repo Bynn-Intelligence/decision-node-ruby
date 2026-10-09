@@ -194,6 +194,8 @@ An upload is one `POST /v1/uploads` for the request's images, then one `PUT` per
 
 Every local image is checked before any request: its format from the first bytes (JPEG, PNG or WebP; a `media_type:` you give must match them), at most 10,485,760 bytes, and at most 40,000,000 pixels, read from the image header without decoding it. A request takes up to 16 images (URLs, inline and uploaded together), with unique ids; one upload call takes all of them. A 17th raises the API's `ValidationError`, a `too_long` entry on the images, before anything is sent. Many large images can still pass the model's token limit, which the API answers with a `ContextLimitError`. No image is ever resized or re-encoded. A file that cannot be read raises `ArgumentError` where the `Image` is made.
 
+A request body may be at most 26,214,400 bytes (25 MiB). Inline images and video frames count toward it; uploaded images and URLs count only by their id or URL. The SDK measures the body as it will send it before anything is sent or uploaded, and raises `RequestTooLargeError` when it is over. Local images at or over the inline threshold are uploaded, so a request with images stays far under the limit; a base64 image in a wire-form Hash is sent as given and counts in full.
+
 ### Referring to images and videos
 
 There are two ways to say which image a question is about:
@@ -524,6 +526,7 @@ Every error derives from `DecisionNode::DecisionNodeError`, which has `status`, 
 | 402 | `InsufficientCreditError` | |
 | 403 | `RefusalError` when the request was refused (`error_type` `refusal_error`), else `PermissionDeniedError` (a booster turned off for the workspace, a suspended workspace; `error_type` tells them apart) | `category` (`harm` or `self_harm`), `safety` |
 | 404 | `NotFoundError` | |
+| 413 | `RequestTooLargeError`: the body is over 26,214,400 bytes (25 MiB); also raised before sending, with no status | |
 | 422 | `ValidationError` | `entries` |
 | 429 | `RateLimitError`; `SessionLimitError` when `error_type` is `session_limit_exceeded` | `retry_after` (seconds) |
 | 529 | `OverloadedError`, also for `booster_unavailable` (a required booster failed) | `retry_after` (seconds) |
@@ -551,7 +554,7 @@ end
 - The timeout is 10 seconds per attempt, and it covers the whole attempt: from sending the request to the last byte of the body, not each network step. A server that sends its answer slowly, a few bytes at a time, still ends the attempt at the deadline with a `TimeoutError`.
 - Only a 2xx status is a success. Redirects are never followed, so the API key is never sent to another URL or over plain HTTP; a 3xx raises `DecisionNodeError` with its status.
 - A request is retried twice after the first attempt on 408, 429, any 5xx, timeouts and connection errors. The wait is the server's `retry-after-ms`, else `Retry-After` in seconds or as an HTTP date, capped at 60 seconds; without either, an exponential backoff from 0.5 seconds with jitter, capped at 8 seconds. A decision changes nothing on the server, so a retry is always safe.
-- 400, 401, 402, 403, 404 and 422 are never retried, and neither is a session limit. Batch create, add and finalize follow their own rule (see "Batches"). An image `PUT` to storage is retried on 5xx and connection errors in the same way.
+- 400, 401, 402, 403, 404, 413 and 422 are never retried, and neither is a session limit. Batch create, add and finalize follow their own rule (see "Batches"). An image `PUT` to storage is retried on 5xx and connection errors in the same way.
 
 ## Configuration
 

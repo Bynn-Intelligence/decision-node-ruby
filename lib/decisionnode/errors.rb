@@ -77,6 +77,11 @@ class DecisionNode
   # 404: the path or resource does not exist.
   class NotFoundError < DecisionNodeError; end
 
+  # 413: the request body is over the API's limit of 26,214,400 bytes (25
+  # MiB). Never retried. Also raised before any request when the encoded body
+  # would be over it: such an error has no status and no request id.
+  class RequestTooLargeError < DecisionNodeError; end
+
   # 422: the request body does not match the schema. Also raised before any
   # request for a number grid the API would refuse, or a score with no levels.
   class ValidationError < DecisionNodeError
