@@ -64,6 +64,14 @@ class CheckRequestTest < Minitest::Test
     end
   end
 
+  # A frame's image is sent without its id, so the 64-character id rule does not apply.
+  def test_check_frame_does_not_check_the_image_id_length
+    s = DecisionNode::Session.new(client(FakeHTTP.new), { "session_id" => "ses_1", "model" => "decisionnode-1.0",
+                                                          "questions" => %w[abort] })
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".unpack1("m")
+    assert_nil s.check_frame(image: DecisionNode::Image.new("f" * 65, data: png))
+  end
+
   def models_body
     { "models" => [
       { "name" => "decisionnode-1.0", "version" => "decisionnode-1.0", "alias" => "decisionnode-latest",

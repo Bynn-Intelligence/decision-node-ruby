@@ -150,7 +150,9 @@ class DecisionNode
 
     # Checks a request's images, once their count is known to be within the
     # limit: ids, URLs, upload references and each local image's bytes.
-    def images!(images, limits: {})
+    # id_length is the 64-character id rule, for a body that carries the ids;
+    # a session frame's image is sent without its id, so a frame skips it.
+    def images!(images, limits: {}, id_length: true)
       return nil if images.nil? || images.empty?
 
       biggest = held(limits, "max_image_bytes") || Image::MAX_BYTES
@@ -158,7 +160,7 @@ class DecisionNode
       images.each_with_index do |img, i|
         id = img.is_a?(Image) ? img.id : (img["id"] || img[:id])
         usage("Image #{i} needs an id.") unless id.is_a?(String) && !id.empty?
-        if code_points(id) > MAX_IMAGE_ID_CHARS
+        if id_length && code_points(id) > MAX_IMAGE_ID_CHARS
           usage("Image #{i}: its id is longer than #{MAX_IMAGE_ID_CHARS} characters.")
         end
         usage("Duplicate image id: #{id}") if seen.key?(id)
@@ -379,7 +381,7 @@ class DecisionNode
       return unless image.is_a?(Image)
 
       usage("image: a frame takes bytes or an upload, not a url.") if image.url
-      images!([image], limits: limits)
+      images!([image], limits: limits, id_length: false)
     end
 
     def frame_questions!(questions, known)
