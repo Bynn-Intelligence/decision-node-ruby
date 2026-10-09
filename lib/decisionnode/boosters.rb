@@ -92,9 +92,8 @@ class DecisionNode
     attr_reader :status
     # How long the booster took, in milliseconds, as sent.
     attr_reader :latency_ms
-    # The calls of this booster billed on this request (a picture it read for
-    # the workspace in the last hour is not billed again), or nil when the
-    # server did not send it.
+    # The calls of this booster billed on this request, or nil when the server
+    # did not send it.
     attr_reader :billed_calls
     # One reading per image read: an AgeReading, an AiGeneratedReading or an
     # UnknownReading. Empty unless `status` is "ok".
