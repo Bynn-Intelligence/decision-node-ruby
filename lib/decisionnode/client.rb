@@ -938,20 +938,43 @@ class DecisionNode
     nil
   end
 
+  # The text of an error status whose body is not JSON, the same in every
+  # DecisionNode SDK and never the HTTP library's own wording.
+  STATUS_TEXT = {
+    400 => "Bad Request", 401 => "Unauthorized", 402 => "Payment Required", 403 => "Forbidden",
+    404 => "Not Found", 405 => "Method Not Allowed", 408 => "Request Timeout", 409 => "Conflict",
+    410 => "Gone", 413 => "Content Too Large", 422 => "Unprocessable Content", 429 => "Too Many Requests",
+    500 => "Internal Server Error", 502 => "Bad Gateway", 503 => "Service Unavailable",
+    504 => "Gateway Timeout", 529 => "Overloaded"
+  }.freeze
+  private_constant :STATUS_TEXT
+
   def error_for(response)
     body = begin
       JSON.parse(response.body.to_s, max_nesting: false)
     rescue JSON::ParserError
-      nil
+      # Not the API's envelope (an edge's or a proxy's page, or no body): the
+      # class follows the status alone and the body is never read.
+      return error_from(response.status, response.headers, nil,
+                        message: edge_message(response.status, response.headers))
     end
     error_from(response.status, response.headers, body)
   end
 
+  # "HTTP <status> <text>", then the request id when the response has one.
+  def edge_message(status, headers)
+    text = "HTTP #{status}"
+    text += " #{STATUS_TEXT[status]}" if STATUS_TEXT.key?(status)
+    request_id = headers["x-request-id"]
+    request_id.nil? ? text : "#{text} (request id #{request_id})"
+  end
+
   # The error the API's answer gives: the class by status (and error_type),
-  # with the fields read from the body and headers.
-  def error_from(status, headers, body)
+  # with the fields read from the body and headers. `message` is given for a
+  # body that is not JSON, which then plays no part.
+  def error_from(status, headers, body, message: nil)
     detail = body.is_a?(Hash) ? body["detail"] : nil
-    message = error_type = entries = category = nil
+    error_type = entries = category = nil
     case detail
     when Hash
       error_type = detail["error_type"]

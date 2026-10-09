@@ -18,6 +18,8 @@ class DecisionNode
   # Token counts and anything that depends on server state stay the server's.
   module Checks
     MAX_IMAGES = 16
+    # An image's id, counted in characters (code points), never bytes.
+    MAX_IMAGE_ID_CHARS = 64
     MAX_VIDEOS = 4
     MAX_FPS = 4
     MAX_CHOICE_OPTIONS = 255
@@ -28,7 +30,7 @@ class DecisionNode
     MAX_BODY_BYTES = 26_214_400
     BODY_TOO_LARGE = "The request body is over 26,214,400 bytes (25 MiB). Send large images as uploads " \
                      "(POST /v1/uploads) and name them by upload_id."
-    private_constant :MAX_BODY_BYTES, :BODY_TOO_LARGE
+    private_constant :MAX_IMAGE_ID_CHARS, :MAX_BODY_BYTES, :BODY_TOO_LARGE
     MAX_WINDOW = 64
     MAX_TTL_SECONDS = 3_600
     MAX_SEQ = (2**53) - 1
@@ -156,12 +158,22 @@ class DecisionNode
       images.each_with_index do |img, i|
         id = img.is_a?(Image) ? img.id : (img["id"] || img[:id])
         usage("Image #{i} needs an id.") unless id.is_a?(String) && !id.empty?
+        if code_points(id) > MAX_IMAGE_ID_CHARS
+          usage("Image #{i}: its id is longer than #{MAX_IMAGE_ID_CHARS} characters.")
+        end
         usage("Duplicate image id: #{id}") if seen.key?(id)
 
         seen[id] = true
         image!(img, biggest) if img.is_a?(Image)
       end
       nil
+    end
+
+    # A string's length in code points, whatever its encoding says; bytes
+    # without an encoding are read as UTF-8.
+    def code_points(text)
+      text = text.dup.force_encoding(Encoding::UTF_8) if text.encoding == Encoding::BINARY
+      text.length
     end
 
     def image!(img, biggest)

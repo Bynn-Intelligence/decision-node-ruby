@@ -17,11 +17,13 @@ Implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERS
 - Fine-tuned models: a fine-tuned model's name (`decisionnode-1.0-flash@acme/fraud`, or pinned with `:3`) is sent as given, and `Decision#model` is the pinned name that answered. `ModelInfo#fine_tuned`, `#base`, `#adapter_version` and `#status` (and `fine_tuned?`), `nil` on a catalogue model.
 - `RequestTooLargeError`, for the API's 413 on any call (never retried) and raised before sending when the encoded body is over 26,214,400 bytes (25 MiB), the API's limit: on `decide`, the helpers, `decide_many` (for the whole call, before anything is sent), each batch line as sent and `check_request`. An image that would be uploaded counts by its upload id, so nothing is uploaded to measure. `decide_raw` sends its body as given.
 - The fallback: `fallback:` (`true` or `false`, sent only when given) on `decide`, the helpers, `decide_many` requests, batch requests and `check_request`; any other value is an `ArgumentError`. `Decision#fallback` is a `DecisionNode::Fallback` (`served_model`, `requested_model`) from the `x-decisionnode-fallback` and `x-decisionnode-requested-model` headers when another model answered in place of the one asked for, `nil` otherwise; a batch result's decision reads them from its line's headers.
+- An image id longer than 64 characters (counted in characters, not bytes) raises `BadRequestError` (`api_usage_error`, "Image 1: its id is longer than 64 characters.") before anything is sent, after the empty-id check and before the duplicate check.
 - The README documents boosters, how they are billed and their errors, fine-tuned model names and the fallback.
 
 ### Changed
 
 - A 403 whose `error_type` is not `refusal_error` (`booster_not_enabled`, a suspended workspace) is a `PermissionDeniedError`, as before; a 529 `booster_unavailable` is an `OverloadedError`, retried like every 529.
+- An error whose body is not JSON (a page from a proxy or the service's edge, or no body) is classified by its status alone, with `error_type` `nil`, and its message is `HTTP <status> <text>` from a fixed table (`HTTP 413 Content Too Large`), followed by the request id when the response has one. The body is no longer kept on the error.
 
 ## [0.2.0] - Unreleased
 

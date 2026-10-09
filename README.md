@@ -396,7 +396,7 @@ The SDK checks every fixed rule the API documents before any network call, so th
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's documented message | null |
 | A point or box question in a request with no image, without `image:` when the request has two or more, with an `image:` that is not one of the request's image ids, or with `units:` other than `"pixels"` and `"normalized"` | `ValidationError` with the server's `entries` | null |
 | More than 16 images or more than 4 videos (a `too_long` entry on the list, after the state's and the questions' entries) | `ValidationError` with the server's `entries` | null |
-| An empty or repeated image id, bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
+| An empty or repeated image id, an id longer than 64 characters (counted in characters, not bytes: "Image 1: its id is longer than 64 characters.", the image counted from 0), bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
 | An `https` image URL over 2,048 characters, with user information, on a port other than 443, without a host, or naming a private or reserved address literally | `BadRequestError` | `image_url_refused` |
 | A video fault: see "Videos" | `BadRequestError` with the API's message | `api_usage_error` |
 | `open_session`: `window` outside 1 to 64, `ttl_seconds` outside 1 to 3,600 | `ValidationError` with the server's `entries` | null |
@@ -551,6 +551,8 @@ Every error derives from `DecisionNode::DecisionNodeError`, which has `status`, 
 | other 5xx, a 2xx whose body is not JSON, or a helper's missing or malformed answer | `ServerError` | |
 | any other status (a 3xx, 405, 409, 410, 408 once its retries are spent) | `DecisionNodeError` itself, with `status` | |
 | no response | `ConnectionError`, `TimeoutError` | |
+
+An error whose body is not the API's JSON (a page from a proxy or the service's edge, or no body at all) is classified by its status alone, from the table above: a 400 is a `BadRequestError` and a 403 a `PermissionDeniedError`, never their subclasses. Its `error_type` is `nil`, `request_id` and `reason` come from the headers, and `message` is the SDK's own description, `HTTP <status> <text>` with the request id after it when there is one: `HTTP 413 Content Too Large`, `HTTP 408 Request Timeout (request id req_edge_0408)`. The body is never read into the error. Retries follow the status as for any error.
 
 An image upload that storage refuses raises `DecisionNodeError` itself with the storage's `status`, `error_type` `upload_failed`, and the storage's error code in `reason`.
 

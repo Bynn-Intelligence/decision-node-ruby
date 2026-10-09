@@ -95,7 +95,8 @@ class ErrorsTest < Minitest::Test
     http = FakeHTTP.new(DecisionNode::HTTPResponse.new(502, { "content-type" => "text/html" }, "<html>bad gateway</html>"))
     err = assert_raises(DecisionNode::ServerError) { client(http, max_retries: 0).decide(questions: Q) }
     assert_equal 502, err.status
-    assert_equal "", err.message
+    assert_equal "HTTP 502 Bad Gateway", err.message
+    assert_nil err.body
   end
 
   def test_success_status_with_non_json_body
