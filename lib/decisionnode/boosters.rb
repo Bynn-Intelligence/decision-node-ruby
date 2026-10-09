@@ -95,8 +95,10 @@ class DecisionNode
     # The calls of this booster billed on this request, or nil when the server
     # did not send it.
     attr_reader :billed_calls
-    # One reading per image read: an AgeReading, an AiGeneratedReading or an
-    # UnknownReading. Empty unless `status` is "ok".
+    # One reading per image the booster was to read: an AgeReading, an
+    # AiGeneratedReading or an UnknownReading. A picture it did not read (it
+    # timed out or failed) or could not decode (`readable` false) is an
+    # UnknownReading holding those fields; `status` says why.
     attr_reader :results
     # The entry as received.
     attr_reader :raw
