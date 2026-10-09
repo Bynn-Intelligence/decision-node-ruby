@@ -109,13 +109,13 @@ The client checks its arguments when it is made and raises `ArgumentError` for a
 
 | Method | Returns |
 |---|---|
-| `decide(state:, questions:, images: nil, videos: nil, model: nil, boosters: nil)` | A `DecisionNode::Decision` |
+| `decide(state:, questions:, images: nil, videos: nil, model: nil, boosters: nil, fallback: nil)` | A `DecisionNode::Decision` |
 | `decide_many(requests, concurrency: 8)` | One `DecisionNode::DecisionResult` per request, in input order: a `Decision`, or the `DecisionNodeError` that request ended with |
-| `check(state:, instructions:, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil, boosters: nil)` | A `TruthAnswer` |
-| `classify(state:, instructions:, options:, images: nil, videos: nil, model: nil, boosters: nil)` | A `ChoiceAnswer` |
-| `score(state:, instructions:, levels:, images: nil, videos: nil, model: nil, boosters: nil)` | A `ScoreAnswer` |
-| `number(state:, instructions:, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil, boosters: nil)` | A `NumberAnswer` |
-| `gate(action:, context: nil, images: nil, videos: nil, model: nil, boosters: nil)` | A `Decision` with the answers `risk` (score), `touches_production` (truth) and `verdict` (choice of `allow`, `confirm`, `block`) |
+| `check(state:, instructions:, if_true: nil, if_false: nil, images: nil, videos: nil, model: nil, boosters: nil, fallback: nil)` | A `TruthAnswer` |
+| `classify(state:, instructions:, options:, images: nil, videos: nil, model: nil, boosters: nil, fallback: nil)` | A `ChoiceAnswer` |
+| `score(state:, instructions:, levels:, images: nil, videos: nil, model: nil, boosters: nil, fallback: nil)` | A `ScoreAnswer` |
+| `number(state:, instructions:, min: nil, max: nil, step: nil, images: nil, videos: nil, model: nil, boosters: nil, fallback: nil)` | A `NumberAnswer` |
+| `gate(action:, context: nil, images: nil, videos: nil, model: nil, boosters: nil, fallback: nil)` | A `Decision` with the answers `risk` (score), `touches_production` (truth) and `verdict` (choice of `allow`, `confirm`, `block`) |
 | `models` | An Array of `DecisionNode::ModelInfo` |
 | `upload(images)` | One upload id per image (see "Images") |
 | `open_session(questions:, state: nil, instructions: nil, model: nil, window: nil, ttl_seconds: nil)` | A `DecisionNode::Session` (see "Sessions") |
@@ -153,7 +153,7 @@ end
 
 | Class | Fields |
 |---|---|
-| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `usage.video_frames`, `usage.video_seconds`, `usage.booster_tokens`, `usage.boosters`, `evidence` (see "Boosters"), `warnings`, `request_id`, `latency_ms`, `safety`, `raw` |
+| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `usage.video_frames`, `usage.video_seconds`, `usage.booster_tokens`, `usage.boosters`, `evidence` (see "Boosters"), `fallback` (see "Fallback"), `warnings`, `request_id`, `latency_ms`, `safety`, `raw` |
 | `TruthAnswer` | `truth` |
 | `ChoiceAnswer` | `choice`, `confidence`, `probabilities` (by option name, exactly as sent) |
 | `ScoreAnswer` | `score`, `confidence`, `probabilities` (by level index, an Integer), `legend` (level index to the level as sent) |
@@ -164,7 +164,7 @@ end
 
 Answers are read by question id. An answer of a type this version does not know is returned as a `DecisionNode::UnknownAnswer` with its `type` and `raw` fields, so the rest of the decision still parses. So is an answer of a known type with a field missing or of the wrong type (a `truth` answer without a number in `truth`, for example): the decision does not fail. All answer classes derive from `DecisionNode::Answer`.
 
-A token count or `latency_ms` the server did not send is `nil`, never 0. So are `usage.video_frames` and `usage.video_seconds` for a request without videos (`warnings` is then an empty Array), and `evidence`, `usage.booster_tokens` and `usage.boosters` for a request without boosters.
+A token count or `latency_ms` the server did not send is `nil`, never 0. So are `usage.video_frames` and `usage.video_seconds` for a request without videos (`warnings` is then an empty Array), and `evidence`, `usage.booster_tokens` and `usage.boosters` for a request without boosters. `fallback` is `nil` on an ordinary answer.
 
 ## Images
 
@@ -372,6 +372,17 @@ d.model # => "decisionnode-1.0-flash@acme/fraud:3", the version that answered
 ```
 
 The name is `<base>@<workspace>/<name>`, which means the version deployed most recently, or `<base>@<workspace>/<name>:<n>` for one version. The SDK sends it as given; a name that does not exist, is not deployed or belongs to another workspace raises the API's `BadRequestError` ("Unknown model: ..."). `Decision#model` is always the pinned name with its version. `models` lists your workspace's fine-tuned models beside the catalogue, each `ModelInfo` with `fine_tuned` (`true`), `base` (the base model), `adapter_version` (its version number) and `status` (`deployed`, which answers decisions, or `ready`, trained but not deployed); these are `nil` on a catalogue model.
+
+## Fallback
+
+A request for `decisionnode-1.0` that no ready worker can take at once is answered by `decisionnode-1.0-flash` instead, billed at Flash's price. `d.model` is then the model that answered, and `d.fallback` names both:
+
+```ruby
+d = dn.decide(state: ticket, questions: questions, model: "decisionnode-1.0")
+d.fallback # => #<struct DecisionNode::Fallback served_model="decisionnode-1.0-flash", requested_model="decisionnode-1.0">
+```
+
+`d.fallback` is `nil` on an ordinary answer. Pass `fallback: false` (on `decide`, the helpers, `decide_many` requests and batch requests) to get the 529 `OverloadedError` instead, which is retried like every 529; left out, the API's default (`true`) applies and the request carries no `fallback` field. Sessions, batch lines and fine-tuned models never fall back.
 
 ## Checked before sending
 

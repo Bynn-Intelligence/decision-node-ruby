@@ -18,7 +18,7 @@ module Conformance
   ROOT = ENV.fetch("DECISIONNODE_CONFORMANCE_DIR", "").then { |dir| dir.empty? ? nil : File.expand_path(dir) }
   KINDS = %w[requests responses errors behaviour constants].freeze
   ENV_VARS = %w[DECISIONNODE_API_KEY DECISIONNODE_BASE_URL DECISIONNODE_MODEL].freeze
-  EXACT = %w[probabilities legend raw entries safety body limits evidence boosters].freeze
+  EXACT = %w[probabilities legend raw entries safety body limits evidence boosters fallback].freeze
   # Compared whole and in their key order too: evidence in the request's order, an
   # error's boosters in the header's.
   ORDERED = %w[evidence boosters].freeze
@@ -238,6 +238,8 @@ module Conformance
       "safety" => decision.safety&.to_h,
       "answers" => decision.answers.transform_values { |a| norm_answer(a) },
       "evidence" => norm_evidence(decision.evidence),
+      "fallback" => decision.fallback && { "served_model" => decision.fallback.served_model,
+                                           "requested_model" => decision.fallback.requested_model },
       "warnings" => decision.warnings,
       "raw" => decision.raw
     }

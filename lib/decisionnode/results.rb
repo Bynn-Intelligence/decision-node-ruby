@@ -229,6 +229,13 @@ class DecisionNode
   # calls billed). Each is nil when the response has none.
   Usage = Struct.new(:input_tokens, :output_tokens, :video_frames, :video_seconds, :booster_tokens, :boosters)
 
+  # A fallback answer, Decision#fallback: a request for one model answered by
+  # another because no worker of the model asked for was ready at once.
+  # `served_model` is the model that answered (also Decision#model), from the
+  # `x-decisionnode-fallback` header; `requested_model` the one asked for, from
+  # `x-decisionnode-requested-model` (nil when the header is absent).
+  Fallback = Struct.new(:served_model, :requested_model)
+
   # The result of the safety check that runs on every decision on the hosted API,
   # parsed from the `x-decisionnode-safety` response header.
   class Safety
@@ -328,6 +335,9 @@ class DecisionNode
     # What each booster the request named found, as booster name to
     # Evidence in the request's order; nil when the request named none.
     attr_reader :evidence
+    # A Fallback when another model answered in place of the one asked for;
+    # nil on an ordinary answer.
+    attr_reader :fallback
     # The parsed response body.
     attr_reader :raw
     # The response headers, names in lower case.
@@ -350,6 +360,8 @@ class DecisionNode
       @request_id = headers["x-request-id"]
       @latency_ms = parse_latency(headers["x-decisionnode-latency-ms"])
       @safety = Safety.parse(headers["x-decisionnode-safety"])
+      served = headers["x-decisionnode-fallback"]
+      @fallback = served.nil? ? nil : Fallback.new(served, headers["x-decisionnode-requested-model"])
     end
 
     # The answer to the question with this id.
