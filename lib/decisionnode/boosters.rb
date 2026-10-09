@@ -201,18 +201,27 @@ class DecisionNode
     # "inference" (read from the pixels), "c2pa" (the file's Content
     # Credentials say so), or another value as sent.
     attr_reader :method
-    # The likeliest generator, a TopGenerator.
+    # The likeliest generator, a TopGenerator, when the reading says the image
+    # is likely generated; nil otherwise, and always on a "c2pa" reading.
     attr_reader :top_generator
-    # Who signed the file's Content Credentials, or nil when it has none.
+    # Who signed the file's Content Credentials when they are trusted; nil
+    # otherwise.
     attr_reader :c2pa_signer
+    # "untrusted" when the file carries Content Credentials that validate but
+    # are not trusted (they name no signer and change nothing in the reading),
+    # another value as sent, or nil when the reading has none.
+    attr_reader :c2pa
 
     def self.well_formed?(raw)
       top = raw["top_generator"]
       raw["image"].is_a?(String) && number?(raw["generated"]) && number?(raw["confidence"]) &&
         raw["method"].is_a?(String) &&
-        top.is_a?(Hash) && top["name"].is_a?(String) && number?(top["probability"]) &&
-        # Always sent: null when the file carries no Content Credentials.
-        raw.key?("c2pa_signer") && (raw["c2pa_signer"].nil? || raw["c2pa_signer"].is_a?(String))
+        # top_generator and c2pa_signer are always sent, null when unset; c2pa
+        # only when the file's Content Credentials are not trusted.
+        raw.key?("top_generator") && raw.key?("c2pa_signer") &&
+        (top.nil? || (top.is_a?(Hash) && top["name"].is_a?(String) && number?(top["probability"]))) &&
+        (raw["c2pa_signer"].nil? || raw["c2pa_signer"].is_a?(String)) &&
+        (raw["c2pa"].nil? || raw["c2pa"].is_a?(String))
     end
 
     def initialize(raw)
@@ -221,8 +230,9 @@ class DecisionNode
       @confidence = raw["confidence"]
       @method = raw["method"]
       top = raw["top_generator"]
-      @top_generator = TopGenerator.new(top["name"], top["probability"])
+      @top_generator = top && TopGenerator.new(top["name"], top["probability"])
       @c2pa_signer = raw["c2pa_signer"]
+      @c2pa = raw["c2pa"]
     end
   end
 

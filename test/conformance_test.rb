@@ -213,7 +213,8 @@ module Conformance
     when DecisionNode::AiGeneratedReading
       top = reading.top_generator
       AI_GENERATED_FIELDS.to_h { |k| [k, reading.public_send(k)] }
-                         .merge("kind" => "ai_generated", "top_generator" => { "name" => top.name, "probability" => top.probability })
+                         .merge("kind" => "ai_generated", "top_generator" => top && { "name" => top.name, "probability" => top.probability })
+                         .merge("c2pa" => reading.c2pa)
     when DecisionNode::UnknownReading
       { "kind" => "unknown", "raw" => reading.raw }
     else
@@ -372,7 +373,7 @@ module Conformance
         return DecisionNode.number(args["instructions"], min: args["min"], max: args["max"], step: args["step"])
       when "$point" then return DecisionNode.point(args["instructions"], image: args["image"], units: args["units"])
       when "$box" then return DecisionNode.box(args["instructions"], image: args["image"], units: args["units"])
-      when "$booster" then return booster(args)
+      when "$booster" then return booster(args.transform_values { |v| decode(v, ctx) })
       when "$image" then return image(args.transform_values { |v| decode(v, ctx) })
       when "$video" then return video(args, ctx)
       when "$frame" then return frame(args)

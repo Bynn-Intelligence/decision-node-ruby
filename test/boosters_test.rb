@@ -156,7 +156,9 @@ class BoostersTest < Minitest::Test
             { "image" => "a1b2", "generated" => 0.93, "confidence" => 0.86, "method" => "inference",
               "top_generator" => { "name" => "generator-a", "probability" => 0.71 }, "c2pa_signer" => nil },
             { "image" => "c3d4", "generated" => 0.99, "confidence" => 0.99, "method" => "c2pa",
-              "top_generator" => { "name" => "generator-b", "probability" => 0.64 }, "c2pa_signer" => "Example Signer" }
+              "top_generator" => nil, "c2pa_signer" => "Example Signer" },
+            { "image" => "c3d4", "generated" => 0.12, "confidence" => 0.76, "method" => "inference",
+              "top_generator" => nil, "c2pa_signer" => nil, "c2pa" => "untrusted" }
           ]
         },
         "faces" => { "version" => "faces-v1", "status" => "ok", "latency_ms" => 5, "results" => [{ "image" => "a1b2", "count" => 2 }] },
@@ -190,8 +192,12 @@ class BoostersTest < Minitest::Test
     assert_equal DecisionNode::TopGenerator.new("generator-a", 0.71), by_inference.top_generator
     assert_nil by_inference.c2pa_signer
     assert_equal "c2pa", by_c2pa.method
-    assert_equal DecisionNode::TopGenerator.new("generator-b", 0.64), by_c2pa.top_generator
+    assert_nil by_c2pa.top_generator
     assert_equal "Example Signer", by_c2pa.c2pa_signer
+    assert_nil by_c2pa.c2pa
+    untrusted = d.evidence["ai_generated"].results[2]
+    assert_instance_of DecisionNode::AiGeneratedReading, untrusted
+    assert_equal ["untrusted", nil, nil], [untrusted.c2pa, untrusted.c2pa_signer, untrusted.top_generator]
 
     unknown = d.evidence["faces"].results.first
     assert_instance_of DecisionNode::UnknownReading, unknown
@@ -225,7 +231,10 @@ class BoostersTest < Minitest::Test
       # No top_generator, and no c2pa_signer key: each is required.
       { "image" => "c3d4", "generated" => 0.9, "confidence" => 0.8, "method" => "inference", "c2pa_signer" => nil },
       { "image" => "c3d4", "generated" => 0.9, "confidence" => 0.8, "method" => "inference",
-        "top_generator" => { "name" => "x", "probability" => 0.5 } }
+        "top_generator" => { "name" => "x", "probability" => 0.5 } },
+      # A c2pa that is not a string.
+      { "image" => "c3d4", "generated" => 0.9, "confidence" => 0.8, "method" => "inference",
+        "top_generator" => nil, "c2pa_signer" => nil, "c2pa" => 5 }
     ]
     body = truth_body.merge("evidence" => {
                               "age" => { "status" => "ok", "results" => malformed },
