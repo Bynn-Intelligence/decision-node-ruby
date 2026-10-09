@@ -18,22 +18,22 @@ class BoostersTest < Minitest::Test
   # ---- the request
 
   def test_booster_wire_forms
-    assert_equal({ "booster" => "age" }, DecisionNode::Booster.new("age").to_h)
-    assert_equal({ "booster" => "age" }, DecisionNode::Booster.new(:age).to_h)
-    assert_equal({ "booster" => "ai_generated", "images" => ["c3d4"], "require" => true, "options" => { "k" => 1 } },
+    assert_equal({ "name" => "age" }, DecisionNode::Booster.new("age").to_h)
+    assert_equal({ "name" => "age" }, DecisionNode::Booster.new(:age).to_h)
+    assert_equal({ "name" => "ai_generated", "images" => ["c3d4"], "require" => true, "options" => { "k" => 1 } },
                  DecisionNode::Booster.new("ai_generated", images: ["c3d4"], require: true, options: { "k" => 1 }).to_h)
-    assert_equal({ "booster" => "age", "require" => false }, DecisionNode::Booster.new("age", require: false).to_h)
+    assert_equal({ "name" => "age", "require" => false }, DecisionNode::Booster.new("age", require: false).to_h)
   end
 
   def test_boosters_are_sent_in_order_after_the_other_fields
     http = FakeHTTP.new(ok)
     client(http).decide(state: "s", questions: Q, images: IMAGES,
                         boosters: ["age", DecisionNode::Booster.new("ai_generated", images: ["c3d4"], require: true),
-                                   { "booster" => "other", "options" => {} }])
+                                   { "name" => "other", "options" => {} }])
     body = http.calls.first.json
     assert_equal %w[model state questions images boosters], body.keys
-    assert_equal ["age", { "booster" => "ai_generated", "images" => ["c3d4"], "require" => true },
-                  { "booster" => "other", "options" => {} }], body["boosters"]
+    assert_equal ["age", { "name" => "ai_generated", "images" => ["c3d4"], "require" => true },
+                  { "name" => "other", "options" => {} }], body["boosters"]
   end
 
   def test_no_boosters_key_when_left_out_or_empty
@@ -48,7 +48,7 @@ class BoostersTest < Minitest::Test
   def test_a_booster_outside_a_list_is_sent_in_its_wire_form
     http = FakeHTTP.new(ok)
     client(http).decide(questions: Q, boosters: DecisionNode::Booster.new("age", require: true))
-    assert_equal({ "booster" => "age", "require" => true }, http.calls.first.json["boosters"])
+    assert_equal({ "name" => "age", "require" => true }, http.calls.first.json["boosters"])
   end
 
   def test_boosters_are_not_checked_locally
@@ -95,7 +95,7 @@ class BoostersTest < Minitest::Test
                                  { custom_id: "b", questions: Q, boosters: nil, extra: 1 }])
     lines = http.calls.first.body.split("\n").map { |l| JSON.parse(l) }
     assert_equal %w[custom_id model state questions boosters], lines[0].keys
-    assert_equal [{ "booster" => "age", "require" => true }], lines[0]["boosters"]
+    assert_equal [{ "name" => "age", "require" => true }], lines[0]["boosters"]
     assert_equal %w[custom_id model state questions extra], lines[1].keys
   end
 
@@ -109,7 +109,7 @@ class BoostersTest < Minitest::Test
     assert_equal "api_usage_error", err.error_type
     assert_match(/nests 131 objects/, err.reason)
     assert_raises(DecisionNode::BadRequestError) do
-      dn.check_request("decide", questions: Q, boosters: [{ "booster" => "age", "options" => { "k" => deep } }])
+      dn.check_request("decide", questions: Q, boosters: [{ "name" => "age", "options" => { "k" => deep } }])
     end
     assert_raises(DecisionNode::BadRequestError) do
       dn.check_request("batches.create", requests: [{ custom_id: "a", questions: Q, boosters: [{ "options" => deep }] }])

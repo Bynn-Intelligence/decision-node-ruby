@@ -297,10 +297,7 @@ d = dn.decide(
     DecisionNode::Image.new("a1b2", path: "selfie.jpg"),
     DecisionNode::Image.new("c3d4", url: "https://files.example.com/c3d4.jpg")
   ],
-  boosters: [
-    "age",
-    DecisionNode::Booster.new("ai_generated", images: ["c3d4"], require: true)
-  ],
+  boosters: %w[age ai_generated],
   questions: {
     adult: DecisionNode.truth("Is the person in the first picture an adult?"),
     synthetic: DecisionNode.truth("Is the second picture AI-generated?")
@@ -311,12 +308,22 @@ d["adult"].truth                                    # => 0.97
 age = d.evidence["age"]                             # a DecisionNode::Evidence
 age.status                                          # => "ok"
 age.results.first.age_years                         # => 27, with .low, .high, .confidence and .faces
-d.evidence["ai_generated"].results.first.generated  # => 0.93
+d.evidence["ai_generated"].results.last.generated   # => 0.93
 d.usage.booster_tokens                              # the readings' share of input_tokens
 d.usage.boosters                                    # the booster calls billed
 ```
 
-`boosters:` takes a name (`"age"`), a `DecisionNode::Booster.new(name, images: nil, require: nil, options: nil)` or a Hash in the API's wire form, up to 4, each booster at most once, sent in the order given. Each argument of a `Booster` is sent only when given:
+`boosters:` takes booster names, up to 4, each booster at most once, sent in the order given. A booster that needs a setting is a `DecisionNode::Booster`. Here `ai_generated` reads only the second picture, and the request fails if it cannot:
+
+```ruby
+d = dn.decide(
+  images: images,
+  boosters: ["age", DecisionNode::Booster.new("ai_generated", images: ["c3d4"], require: true)],
+  questions: questions
+)
+```
+
+`DecisionNode::Booster.new(name, images: nil, require: nil, options: nil)` is sent as `{"name": "ai_generated", "images": ["c3d4"], "require": true}`, each argument only when given; a Hash in that form works too:
 
 | Argument | Meaning |
 |---|---|

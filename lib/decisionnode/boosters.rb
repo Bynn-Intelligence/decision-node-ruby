@@ -35,7 +35,7 @@ class DecisionNode
 
     # The booster's wire form: `images`, `require` and `options` only when given.
     def to_h
-      wire = { "booster" => name }
+      wire = { "name" => name }
       wire["images"] = images unless images.nil?
       wire["require"] = @require unless @require.nil?
       wire["options"] = options unless options.nil?
