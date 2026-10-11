@@ -292,9 +292,6 @@ A booster is a specialist model that reads the request's images before the decis
 |---|---|---|
 | `age` | A picture of a person | How old the person is, with a range and a confidence (the largest face is read) |
 | `ai_generated` | Any picture | How likely the picture was made by an image generator, which generator most likely, and whether the file carries Content Credentials (C2PA) and who signed them |
-| `face_detection` | Any picture | How many faces it shows and where: a box and a confidence per face. A picture with no face reads 0 faces |
-| `wanted_person` | A picture of a person | Whether a face matches an entry of a wanted-persons list: per face a box, a match score and the entry's reference id, never a name or any personal detail. Off by default: it is turned on for a workspace on request, once its purpose is known |
-| `ocr` | Any picture | The text it shows, all of it by default, or what a `prompt` asks for (a formula, a table, the fields of a JSON schema the prompt gives) |
 
 ```ruby
 d = dn.decide(
@@ -334,7 +331,7 @@ d = dn.decide(
 |---|---|
 | `images` | The ids of the request's images the booster reads. Left out: every image of the request. |
 | `require` | `true`: a booster that fails or does not answer in time fails the request with the 529 `booster_unavailable`, which is retried like every 529. Left out or `false`: the decision runs without that reading, and `evidence` says why. |
-| `options` | The booster's settings, a Hash: `ocr` takes `prompt` (what to read, at most 2,000 characters), `wanted_person` takes `threshold` (a number from 0 to 1). The API checks them. |
+| `options` | The booster's settings, a Hash, for boosters that have any. The API checks them. |
 
 Boosters go with `decide`, the helpers, `decide_many` and batch requests; sessions take none. They read images in every form: a URL, inline bytes or an upload. Without `boosters:` (or with an empty Array) the request has no `boosters` field at all. Nothing about boosters is checked before sending: the API answers a malformed list, an unknown name and a booster turned off before any booster runs and before any charge.
 
@@ -345,14 +342,9 @@ Boosters go with `decide`, the helpers, `decide_many` and batch requests; sessio
 | `Evidence` | `version` (the booster version that read), `status` (`ok`, `timeout`, `error` or `skipped`, when none of the request's images is one it reads), `latency_ms`, `billed_calls` (the calls of this booster billed on this request), `results` (one reading per image the booster was to read; a picture it did not read, because it timed out or failed, or could not decode, `readable` false, is an `UnknownReading` holding those fields, and `status` says why), `raw` |
 | `AgeReading` | `image`, `faces` (how many faces were found), and `age_years`, `low`, `high`, `confidence`, each `nil` when `faces` is 0 |
 | `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, when the file's trusted Content Credentials declare it generated or edited by AI), `top_generator` (`name` and `probability` of the likeliest generator when the reading says likely generated; `nil` otherwise, and always on a `c2pa` reading), `c2pa_signer` (who signed the file's Content Credentials when they are trusted, else `nil`), `c2pa` (`"untrusted"` when the file carries Content Credentials that validate but are not trusted, which change nothing in the reading; else `nil`) |
-| `FaceDetectionReading` | `image`, `faces` (how many faces were found; it can be more than the faces listed, which are at most 64), `detections` (each a `FaceDetection` with `box` and `confidence`) |
-| `WantedPersonReading` | `image`, `faces` (how many faces were checked), `matches` (each a `WantedMatch` with `box`, `score` and `reference`, the list entry's id; empty when none matched) |
-| `OcrReading` | `image`, `text` (the text read, or the answer to the `prompt`; empty when the picture shows none, which is a reading, not a failure), `truncated` (`true` when the reading was cut at the model's context limit) |
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision still parses. |
 
-A face's `box` is a `DecisionNode::FaceBox` with its corners `x1`, `y1` (top left) and `x2`, `y2` (bottom right), the numbers as sent: pixels of the image, or fractions of its width and height when every place question of the request asks for normalized units.
-
-Reading text takes longer than a decision, so a decision whose boosters name `ocr` waits 30 seconds per attempt when the client has no `timeout:` of its own; a `timeout:` you set is used as given, even below 30. Such a request is never retried after a timeout, because the server finishes that attempt and may bill it: the `TimeoutError` is raised instead. Its other retries stay. Set a timeout of at least 30 seconds for requests that name `ocr`.
+A request whose boosters name `ocr` waits 30 seconds per attempt when the client has no `timeout:` of its own; a `timeout:` you set is used as given, even below 30. Such a request is never retried after a timeout, because the server finishes that attempt and may bill it: the `TimeoutError` is raised instead. Its other retries stay. Set a timeout of at least 30 seconds for requests that name `ocr`.
 
 Booster calls are drawn from the prepaid balance with the request's tokens: one call per booster and image read with status `ok`. A booster that timed out or failed is free, and a refused request bills none. The readings' tokens are input tokens at the model's price. The price per call is on the [pricing page](https://decisionnode.com/docs/pricing#boosters).
 
