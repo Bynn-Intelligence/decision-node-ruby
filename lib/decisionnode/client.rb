@@ -16,6 +16,10 @@ class DecisionNode
   # Seconds for one image PUT to storage, apart from `timeout`: a 10 MB image
   # on a slow uplink needs more than an API call does.
   DEFAULT_UPLOAD_TIMEOUT = 60.0
+  # Seconds for one attempt of a decision whose boosters name ocr, when the
+  # caller set no timeout: reading text takes longer than a decision does.
+  OCR_TIMEOUT = 30.0
+  private_constant :OCR_TIMEOUT
 
   RETRY_STATUSES = ([408, 429] + (500..599).to_a).freeze
   BACKOFF_START = 0.5
@@ -73,7 +77,9 @@ class DecisionNode
   # The base URL must use https; http is accepted only for localhost,
   # 127.0.0.1 and ::1, so a key never travels unencrypted.
   # timeout::     seconds for a whole attempt, from sending the request to the
-  #               last byte of the body (default 10). Must be above 0.
+  #               last byte of the body (default 10, and 30 for a decision whose
+  #               boosters name ocr; a timeout given here is used as given for
+  #               every call). Must be above 0.
   # max_retries:: retries after the first attempt (default 2). Must be 0 or more.
   # headers::     extra headers sent with every API request and on a session's
   #               handshake (never on an image upload to storage).
@@ -94,6 +100,7 @@ class DecisionNode
     @base_url = checked_base_url((given(base_url) || env("DECISIONNODE_BASE_URL") || DEFAULT_BASE_URL).chomp("/"))
     @model = given(model) || env("DECISIONNODE_MODEL") || DEFAULT_MODEL
     @timeout = timeout.nil? ? DEFAULT_TIMEOUT : checked_timeout(timeout)
+    @timeout_given = !timeout.nil?
     @max_retries = max_retries.nil? ? DEFAULT_MAX_RETRIES : checked_max_retries(max_retries)
     @inline_threshold = inline_threshold.nil? ? DEFAULT_INLINE_THRESHOLD : checked_threshold(inline_threshold)
     @upload_timeout = upload_timeout.nil? ? DEFAULT_UPLOAD_TIMEOUT : checked_timeout(upload_timeout, "upload_timeout")
@@ -631,8 +638,9 @@ class DecisionNode
   # request that named uploads the SDK placed, answered with a stale-upload
   # 400, is sent once more with the images uploaded again (not a retry).
   def send_prepared(path, call)
+    ocr = ocr_options(call.boosters)
     if call.encoded
-      body, headers, status = request("POST", path, call.encoded, encoded: true)
+      body, headers, status = request("POST", path, call.encoded, encoded: true, **ocr)
       return [Decision.new(body, headers), status]
     end
 
@@ -641,7 +649,7 @@ class DecisionNode
       data = encode(body_for(call.model, call.state, call.questions, wires.empty? ? nil : wires, call.videos, call.boosters,
                              call.fallback))
       begin
-        body, headers, status = request("POST", path, data, encoded: true)
+        body, headers, status = request("POST", path, data, encoded: true, **ocr)
         return [Decision.new(body, headers), status]
       rescue BadRequestError => e
         raise unless attempt.zero? && !placed.empty? && STALE_UPLOAD.include?(e.error_type)
@@ -649,6 +657,20 @@ class DecisionNode
         @uploads.drop(placed)
       end
     end
+  end
+
+  # A decision whose boosters name ocr waits 30 s per attempt unless the
+  # caller set a timeout, and is never retried after a timeout: the server
+  # finishes that attempt and may bill it. Other decisions: no options.
+  def ocr_options(boosters)
+    list = boosters.is_a?(Array) ? boosters : [boosters]
+    names_ocr = list.any? do |b|
+      b = b.wire if b.is_a?(Booster)
+      b.is_a?(Hash) ? (b["name"] || b[:name]).to_s == "ocr" : (b.is_a?(String) || b.is_a?(Symbol)) && b.to_s == "ocr"
+    end
+    return {} unless names_ocr
+
+    { policy: :ocr, timeout: @timeout_given ? nil : OCR_TIMEOUT }
   end
 
   # The typed answer a helper promises, or a ServerError when it is missing
@@ -770,12 +792,15 @@ class DecisionNode
   #
   # policy:: :default retries 408, 429, 5xx, timeouts and connection errors;
   #          :mutation (batch create, add, finalize) only 429 and 529;
-  #          :session_open never a 429 `session_limit_exceeded`.
+  #          :session_open never a 429 `session_limit_exceeded`;
+  #          :ocr (a decision whose boosters name ocr) never a timeout, since
+  #          the server finishes that attempt and may bill it.
+  # timeout:: seconds for each attempt in place of the client's timeout.
   #
   # With a block, a 2xx body is handed to the block line by line as it
   # arrives (when the transport can stream), and the text returned is empty.
   # A stream that fails after its first line is not retried.
-  def request(method, path, body, encoded: false, policy: :default, content_type: nil, raw: false, &on_line)
+  def request(method, path, body, encoded: false, policy: :default, content_type: nil, raw: false, timeout: nil, &on_line)
     raise AuthenticationError, "no API key: pass api_key: or set DECISIONNODE_API_KEY" if @api_key.nil?
 
     data = body.nil? || encoded ? body : encode(body)
@@ -793,10 +818,15 @@ class DecisionNode
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       lines = on_line && @http.respond_to?(:stream) ? LineSplitter.new(on_line) : nil
       begin
-        response = lines ? stream_once(method, url, headers, lines) : attempt_once(method, url, headers, data)
+        response = if lines
+                     stream_once(method, url, headers, lines)
+                   else
+                     attempt_once(method, url, headers, data, timeout: timeout || @timeout)
+                   end
       rescue TimeoutError, ConnectionError => e
         log(method, path, e.class.name.split("::").last, nil, started, attempt)
         raise if attempt >= @max_retries || policy == :mutation || lines&.started?
+        raise if policy == :ocr && e.is_a?(TimeoutError)
 
         @sleeper.call(backoff(attempt))
         attempt += 1

@@ -269,7 +269,91 @@ class DecisionNode
     end
   end
 
+  # A face's box: its corners `x1`, `y1` (top left) and `x2`, `y2` (bottom
+  # right), the numbers as sent: pixels of the image, or fractions of its
+  # width and height when every place question of the request asks for
+  # normalized units.
+  FaceBox = Struct.new(:x1, :y1, :x2, :y2) do
+    def self.well_formed?(raw)
+      raw.is_a?(Hash) && %w[x1 y1 x2 y2].all? { |k| raw[k].is_a?(Numeric) }
+    end
+
+    def self.from(raw)
+      new(raw["x1"], raw["y1"], raw["x2"], raw["y2"])
+    end
+  end
+
+  # One face a `face_detection` reading found: its `box` (a FaceBox) and its
+  # `confidence`, from 0 to 1.
+  FaceDetection = Struct.new(:box, :confidence)
+
+  # One face a `wanted_person` reading matched: its `box` (a FaceBox), the
+  # match `score` from 0 to 1, and `reference`, the id of the list entry it
+  # matched (never a name or other personal detail).
+  WantedMatch = Struct.new(:box, :score, :reference)
+
+  # The faces of a face reading, checked alike for both boosters.
+  module FaceReadings
+    module_function
+
+    def counted?(raw)
+      raw["image"].is_a?(String) && raw["faces"].is_a?(Integer) && !raw["faces"].negative?
+    end
+
+    def list?(raw, key)
+      raw[key].is_a?(Array) && raw[key].all? { |entry| entry.is_a?(Hash) && FaceBox.well_formed?(entry["box"]) && yield(entry) }
+    end
+  end
+  private_constant :FaceReadings
+
+  # A reading of the `face_detection` booster: how many faces the image
+  # shows, and each face's box and confidence.
+  class FaceDetectionReading < Reading
+    # How many faces were found; it can be more than the faces listed, which
+    # are at most 64.
+    attr_reader :faces
+    # The faces found, in the order sent: each a FaceDetection.
+    attr_reader :detections
+
+    def self.well_formed?(raw)
+      FaceReadings.counted?(raw) && FaceReadings.list?(raw, "detections") { |d| number?(d["confidence"]) }
+    end
+
+    def initialize(raw)
+      super
+      @faces = raw["faces"]
+      @detections = raw["detections"].map { |d| FaceDetection.new(FaceBox.from(d["box"]), d["confidence"]) }.freeze
+    end
+  end
+
+  # A reading of the `wanted_person` booster: how many faces it checked, and
+  # each face that matched an entry of the workspace's list.
+  class WantedPersonReading < Reading
+    # How many faces were checked.
+    attr_reader :faces
+    # The faces that matched, in the order sent: each a WantedMatch. Empty
+    # when none did.
+    attr_reader :matches
+
+    def self.well_formed?(raw)
+      FaceReadings.counted?(raw) &&
+        FaceReadings.list?(raw, "matches") { |m| number?(m["score"]) && m["reference"].is_a?(String) }
+    end
+
+    def initialize(raw)
+      super
+      @faces = raw["faces"]
+      @matches = raw["matches"].map { |m| WantedMatch.new(FaceBox.from(m["box"]), m["score"], m["reference"]) }.freeze
+    end
+  end
+
   class Reading
-    KINDS = { "age" => AgeReading, "ai_generated" => AiGeneratedReading, "ocr" => OcrReading }.freeze
+    KINDS = {
+      "age" => AgeReading,
+      "ai_generated" => AiGeneratedReading,
+      "face_detection" => FaceDetectionReading,
+      "wanted_person" => WantedPersonReading,
+      "ocr" => OcrReading
+    }.freeze
   end
 end

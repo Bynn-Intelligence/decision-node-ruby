@@ -230,11 +230,21 @@ module Conformance
                          .merge("c2pa" => reading.c2pa)
     when DecisionNode::OcrReading
       { "kind" => "ocr", "image" => reading.image, "text" => reading.text, "truncated" => reading.truncated }
+    when DecisionNode::FaceDetectionReading
+      { "kind" => "face_detection", "image" => reading.image, "faces" => reading.faces,
+        "detections" => reading.detections.map { |d| { "box" => norm_box(d.box), "confidence" => d.confidence } } }
+    when DecisionNode::WantedPersonReading
+      { "kind" => "wanted_person", "image" => reading.image, "faces" => reading.faces,
+        "matches" => reading.matches.map { |m| { "box" => norm_box(m.box), "score" => m.score, "reference" => m.reference } } }
     when DecisionNode::UnknownReading
       { "kind" => "unknown", "raw" => reading.raw }
     else
       raise Fail, "not a reading: #{reading.class}"
     end
+  end
+
+  def norm_box(box)
+    { "x1" => box.x1, "y1" => box.y1, "x2" => box.x2, "y2" => box.y2 }
   end
 
   def norm_evidence(evidence)
