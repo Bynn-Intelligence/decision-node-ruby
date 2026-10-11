@@ -89,8 +89,15 @@ module Conformance
 
   # ---- comparison
 
+  # An expected {"$pattern" => regex} matches any String the regex finds.
+  def pattern?(value)
+    value.is_a?(Hash) && value.size == 1 && value["$pattern"].is_a?(String)
+  end
+
   def same?(a, b)
-    if [true, false].include?(a) || [true, false].include?(b)
+    if pattern?(a)
+      b.is_a?(String) && Regexp.new(a["$pattern"]).match?(b)
+    elsif [true, false].include?(a) || [true, false].include?(b)
       a.equal?(b)
     elsif a.is_a?(Numeric) && b.is_a?(Numeric)
       a == b
@@ -104,7 +111,7 @@ module Conformance
   end
 
   def match!(expected, actual, path)
-    if expected.is_a?(Hash) && actual.is_a?(Hash)
+    if expected.is_a?(Hash) && actual.is_a?(Hash) && !pattern?(expected)
       expected.each do |k, v|
         raise Fail, "#{path}.#{k}: missing (expected #{short(v)})" unless actual.key?(k)
 

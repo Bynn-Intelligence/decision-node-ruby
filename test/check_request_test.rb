@@ -51,7 +51,7 @@ class CheckRequestTest < Minitest::Test
   end
 
   def test_check_frame_needs_no_socket_and_uses_no_seq
-    s = DecisionNode::Session.new(client(FakeHTTP.new), { "session_id" => "ses_1", "model" => "decisionnode-1.0",
+    s = DecisionNode::Session.new(client(FakeHTTP.new), { "session_id" => "ses_1", "model" => "decisionnode-moe",
                                                           "questions" => %w[mode abort] })
     assert_nil s.check_frame(frame: { battery: 0.3 }, questions: ["abort"])
     error = assert_raises(DecisionNode::BadRequestError) { s.check_frame(frame: "a", questions: ["speed"]) }
@@ -66,7 +66,7 @@ class CheckRequestTest < Minitest::Test
 
   # A frame's image is sent without its id, so the 64-character id rule does not apply.
   def test_check_frame_does_not_check_the_image_id_length
-    s = DecisionNode::Session.new(client(FakeHTTP.new), { "session_id" => "ses_1", "model" => "decisionnode-1.0",
+    s = DecisionNode::Session.new(client(FakeHTTP.new), { "session_id" => "ses_1", "model" => "decisionnode-moe",
                                                           "questions" => %w[abort] })
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==".unpack1("m")
     assert_nil s.check_frame(image: DecisionNode::Image.new("f" * 65, data: png))
@@ -74,24 +74,28 @@ class CheckRequestTest < Minitest::Test
 
   def models_body
     { "models" => [
-      { "name" => "decisionnode-1.0", "version" => "decisionnode-1.0", "alias" => "decisionnode-latest",
+      { "name" => "decisionnode-moe-0.9.0-rc1", "version" => "decisionnode-moe-0.9.0-rc1", "alias" => "decisionnode-moe",
         "number_max_grid_values" => 0, "sessions" => { "enabled" => true, "max_window" => 8 } },
-      { "name" => "decisionnode-1.0-flash", "version" => "decisionnode-1.0-flash", "alias" => "decisionnode-flash-latest" }
+      { "name" => "decisionnode-flash-0.9.0-rc1", "version" => "decisionnode-flash-0.9.0-rc1", "alias" => "decisionnode-flash" }
     ] }
   end
 
   def test_held_limits_are_found_by_alias_or_version
     http = FakeHTTP.new(FakeHTTP.json(200, models_body))
-    dn = client(http) # the client's model is decisionnode-latest
+    dn = client(http) # the client's model is decisionnode-moe
     dn.models
     error = assert_raises(DecisionNode::BadRequestError) do
       dn.check_request("decide", state: "s", questions: { "n" => DecisionNode.number("How many?") })
     end
-    assert_equal "Model decisionnode-latest does not answer number questions.", error.message
+    assert_equal "Model decisionnode-moe does not answer number questions.", error.message
     error = assert_raises(DecisionNode::ValidationError) { dn.check_request("open_session", questions: questions, window: 9) }
     assert_equal({ "le" => 8 }, error.entries.first["ctx"])
+    # The pinned id itself finds the same entry.
+    assert_raises(DecisionNode::ValidationError) do
+      dn.check_request("open_session", questions: questions, window: 9, model: "decisionnode-moe-0.9.0-rc1")
+    end
     # The flash model states neither limit, and a name the list does not state holds nothing.
-    assert_nil dn.check_request("decide", questions: { "n" => DecisionNode.number("n") }, model: "decisionnode-flash-latest")
-    assert_nil dn.check_request("open_session", questions: questions, window: 64, model: "decisionnode-2.0")
+    assert_nil dn.check_request("decide", questions: { "n" => DecisionNode.number("n") }, model: "decisionnode-flash")
+    assert_nil dn.check_request("open_session", questions: questions, window: 64, model: "decisionnode-unlisted")
   end
 end

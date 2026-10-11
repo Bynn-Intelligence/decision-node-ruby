@@ -65,7 +65,7 @@ class Spec11Test < Minitest::Test
   # ---- sessions
 
   def session_body
-    { "session_id" => "ses_0123456789abcdef01234567", "model" => "decisionnode-1.0",
+    { "session_id" => "ses_0123456789abcdef01234567", "model" => "decisionnode-moe",
       "stream_url" => "wss://api.example.test/v1/sessions/ses_0123456789abcdef01234567/stream",
       "answers" => { "abort" => { "type" => "truth", "truth" => 0.03 } }, "window" => 8 }
   end
@@ -73,7 +73,7 @@ class Spec11Test < Minitest::Test
   def test_open_session_sends_only_what_is_given_and_always_a_model
     http = FakeHTTP.new(FakeHTTP.json(200, session_body))
     s = client(http).open_session(questions: { abort: DecisionNode.truth("Abort?") }, window: 4)
-    assert_equal({ "model" => "decisionnode-latest", "questions" => { "abort" => { "type" => "truth", "instructions" => "Abort?" } },
+    assert_equal({ "model" => "decisionnode-moe", "questions" => { "abort" => { "type" => "truth", "instructions" => "Abort?" } },
                    "window" => 4 }, http.calls.first.json)
     assert_equal "ses_0123456789abcdef01234567", s.session_id
     assert_equal 8, s.window
@@ -152,13 +152,13 @@ class Spec11Test < Minitest::Test
 
   def test_create_sends_json_lines_with_model_and_state
     http = FakeHTTP.new(FakeHTTP.json(201, batch))
-    b = client(http).batches.create([line("a"), { "custom_id" => "b", "questions" => { "q" => DecisionNode.truth("?") }, "model" => "decisionnode-1.0" }])
+    b = client(http).batches.create([line("a"), { "custom_id" => "b", "questions" => { "q" => DecisionNode.truth("?") }, "model" => "decisionnode-moe" }])
     call = http.calls.first
     assert_equal "application/x-ndjson", call.headers["Content-Type"]
     lines = call.body.split("\n").map { |l| JSON.parse(l) }
     assert_equal %w[custom_id model state questions], lines.first.keys
-    assert_equal ["decisionnode-latest", "s"], [lines[0]["model"], lines[0]["state"]]
-    assert_equal ["decisionnode-1.0", ""], [lines[1]["model"], lines[1]["state"]]
+    assert_equal ["decisionnode-moe", "s"], [lines[0]["model"], lines[0]["state"]]
+    assert_equal ["decisionnode-moe", ""], [lines[1]["model"], lines[1]["state"]]
     assert_instance_of DecisionNode::Batch, b
     assert_equal "draft", b.state
   end

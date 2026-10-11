@@ -9,7 +9,7 @@ class DecisionNode
   include Uploads
 
   DEFAULT_BASE_URL = "https://api.decisionnode.com"
-  DEFAULT_MODEL = "decisionnode-latest"
+  DEFAULT_MODEL = "decisionnode-moe"
   DEFAULT_TIMEOUT = 10.0
   DEFAULT_MAX_RETRIES = 2
   DEFAULT_CONCURRENCY = 8
@@ -67,7 +67,7 @@ class DecisionNode
   #
   # api_key::     the API key; else DECISIONNODE_API_KEY.
   # base_url::    else DECISIONNODE_BASE_URL, else https://api.decisionnode.com.
-  # model::       the default model; else DECISIONNODE_MODEL, else decisionnode-latest.
+  # model::       the default model; else DECISIONNODE_MODEL, else decisionnode-moe.
   #
   # An empty string for api_key, base_url or model counts as not given.
   # The base URL must use https; http is accepted only for localhost,
@@ -121,15 +121,15 @@ class DecisionNode
   # videos::    an Array of Video (or wire-form Hashes), up to 4, each sent as
   #             its frames.
   # model::     overrides the client's model for this call (nil or "" uses the
-  #             client's). A fine-tuned model's name ("decisionnode-1.0-flash@acme/fraud",
+  #             client's). A fine-tuned model's name ("decisionnode-moe@acme/fraud",
   #             or pinned, ".../fraud:3") is sent as given.
   # boosters::  an Array of boosters that read the request's images before the
   #             decision: names ("age"), Booster objects or wire-form Hashes, sent
   #             in this order. Their readings come back in Decision#evidence.
   # fallback::  true or false, sent only when given. Left out, the API's default
-  #             (true) applies: a request for decisionnode-1.0 that no ready
-  #             worker can take at once is answered by decisionnode-1.0-flash,
-  #             and Decision#fallback says so. false: such a request gets the 529
+  #             (true) applies: a decisionnode-moe request that no ready
+  #             worker can take at once is answered by Flash, and
+  #             Decision#fallback names both by their pinned ids. false: such a request gets the 529
   #             OverloadedError instead, retried like every 529.
   #
   # The request is checked before anything is sent: a fault the API would

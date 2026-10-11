@@ -87,7 +87,7 @@ d["cars"].probabilities   # => {"6" => 0.105, "7" => 0.783, "8" => 0.098}
 dn = DecisionNode.new(
   api_key: "dn_...",                         # else DECISIONNODE_API_KEY
   base_url: "https://api.decisionnode.com",  # else DECISIONNODE_BASE_URL
-  model: "decisionnode-latest",              # else DECISIONNODE_MODEL
+  model: "decisionnode-moe",                 # else DECISIONNODE_MODEL
   timeout: 10,                               # seconds for a whole attempt
   max_retries: 2,
   headers: { "x-team" => "support-tools" },  # sent with every API request
@@ -367,19 +367,19 @@ end
 A model your workspace fine-tuned in the console is called by its name in `model:`, by the keys of that workspace, and answers like its base model: the same question types, answers, limits and errors.
 
 ```ruby
-d = dn.decide(state: claim, questions: questions, model: "decisionnode-1.0-flash@acme/fraud")
-d.model # => "decisionnode-1.0-flash@acme/fraud:3", the version that answered
+d = dn.decide(state: claim, questions: questions, model: "decisionnode-moe@acme/fraud")
+d.model # => "decisionnode-moe@acme/fraud:3", the version that answered
 ```
 
-The name is `<base>@<workspace>/<name>`, which means the version deployed most recently, or `<base>@<workspace>/<name>:<n>` for one version. The SDK sends it as given; a name that does not exist, is not deployed or belongs to another workspace raises the API's `BadRequestError` ("Unknown model: ..."). `Decision#model` is always the pinned name with its version. `models` lists your workspace's fine-tuned models beside the catalogue, each `ModelInfo` with `fine_tuned` (`true`), `base` (the base model), `adapter_version` (its version number) and `status` (`deployed`, which answers decisions, or `ready`, trained but not deployed); these are `nil` on a catalogue model.
+The name is `<base>@<workspace>/<name>`, the base a family id (`decisionnode-moe` or `decisionnode-flash`), which means the version deployed most recently, or `<base>@<workspace>/<name>:<n>` for one version. The SDK sends it as given; a name that does not exist, is not deployed or belongs to another workspace raises the API's `BadRequestError` ("Unknown model: ..."). `Decision#model` is always the pinned name with its version. `models` lists your workspace's fine-tuned models beside the catalogue, each `ModelInfo` with `fine_tuned` (`true`), `base` (the base model), `adapter_version` (its version number) and `status` (`deployed`, which answers decisions, or `ready`, trained but not deployed); these are `nil` on a catalogue model.
 
 ## Fallback
 
-A request for `decisionnode-1.0` that no ready worker can take at once is answered by `decisionnode-1.0-flash` instead, billed at Flash's price. `d.model` is then the model that answered, and `d.fallback` names both:
+A `decisionnode-moe` request that no ready worker can take at once is answered by Flash instead, billed at Flash's price. `d.model` is then the model that answered, and `d.fallback` names both: the model that answered by its pinned id, and the model asked for as it was asked (a family id or an older id as the family id, a pinned id as itself):
 
 ```ruby
-d = dn.decide(state: ticket, questions: questions, model: "decisionnode-1.0")
-d.fallback # => #<struct DecisionNode::Fallback served_model="decisionnode-1.0-flash", requested_model="decisionnode-1.0">
+d = dn.decide(state: ticket, questions: questions, model: "decisionnode-moe")
+d.fallback # => #<struct DecisionNode::Fallback served_model="decisionnode-flash-<version>", requested_model="decisionnode-moe">
 ```
 
 `d.fallback` is `nil` on an ordinary answer. Pass `fallback: false` (on `decide`, the helpers, `decide_many` requests and batch requests) to get the 529 `OverloadedError` instead, which is retried like every 529; left out, the API's default (`true`) applies and the request carries no `fallback` field. Sessions, batch lines and fine-tuned models never fall back.
@@ -403,7 +403,7 @@ The SDK checks every fixed rule the API documents before any network call, so th
 | `Session#send`: see "Sessions" | `BadRequestError` | `api_usage_error` |
 | `batches.create` and `add`: a missing, empty, non-String or repeated `custom_id`, an add with no requests; `batches.list`: `offset` below 0, `limit` outside 1 to 100 | `BadRequestError` with the API's documented message | `api_usage_error` |
 
-After a `models` call the client also holds the limits `/v1/models` publishes and checks them: a session's `max_window` and `max_ttl_seconds`, a model that serves no sessions or answers no number questions, a batch's `requests_per_batch` and `max_custom_id_chars`, and the image and option bounds. A request's model is found in that list by its name, else by the entry that states it as its `alias` or pinned `version`, so `decisionnode-latest` takes the limits of the version it points to. Without that call, or for a model the list does not state, those checks are left to the server. Limits counted in tokens are always the server's to judge. `decide_raw` sends its body unchecked.
+After a `models` call the client also holds the limits `/v1/models` publishes and checks them: a session's `max_window` and `max_ttl_seconds`, a model that serves no sessions or answers no number questions, a batch's `requests_per_batch` and `max_custom_id_chars`, and the image and option bounds. A request's model is found in that list by its name, else by the entry that states it as its `alias` or pinned `version`, so `decisionnode-moe` takes the limits of the pinned version it points to. Without that call, or for a model the list does not state, those checks are left to the server. Limits counted in tokens are always the server's to judge. `decide_raw` sends its body unchecked.
 
 A bad argument raises Ruby's own `ArgumentError`, never a DecisionNode class: a `base_url`, `timeout`, `max_retries` or `inline_threshold` the client refuses, a `concurrency` below 1, an empty question map, an image file that cannot be read, and a value that cannot be serialised as JSON. A missing API key raises `AuthenticationError`, also without a request.
 
@@ -582,11 +582,11 @@ end
 |---|---|---|---|
 | API key | `api_key:` | `DECISIONNODE_API_KEY` | none |
 | Base URL | `base_url:` | `DECISIONNODE_BASE_URL` | `https://api.decisionnode.com` |
-| Model | `model:` | `DECISIONNODE_MODEL` | `decisionnode-latest` |
+| Model | `model:` | `DECISIONNODE_MODEL` | `decisionnode-moe` |
 | Inline threshold | `inline_threshold:` | | `524288` bytes |
 | Upload timeout | `upload_timeout:` | | `60` seconds per image `PUT` |
 
-Model ids: `decisionnode-latest`, `decisionnode-flash-latest`, and the pinned versions `decisionnode-1.0` and `decisionnode-1.0-flash`.
+Model ids: the family ids `decisionnode-moe` (the main model) and `decisionnode-flash` (faster and lower cost) always mean the current release. A pinned id is `decisionnode-<family>-<version>`, with the versions `models` lists, and every answer's `model` is the pinned id that answered. `model:` is free text: a pinned id, a fine-tuned model's name and the older ids the API still accepts (`decisionnode-1.0`, `decisionnode-1.0-flash`, `decisionnode-latest`, `decisionnode-flash-latest`) are sent as given.
 
 The SDK sends no telemetry. The only header it adds is `User-Agent: decisionnode-ruby/<version>`. To receive the safety result in the response body as well, send the request header `x-decisionnode-safety-body: true` through `headers:` (see "The safety result in the response body").
 

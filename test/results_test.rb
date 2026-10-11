@@ -4,7 +4,7 @@ require "test_helper"
 
 class ResultsTest < Minitest::Test
   BODY = <<~JSON
-    {"model": "decisionnode-1.0",
+    {"model": "decisionnode-moe-0.9.0-rc1",
      "answers": {
        "route": {"type": "choice", "choice": "billing", "confidence": 0.8200000000000001,
                  "probabilities": {"billing": 0.8200000000000001, "bug": 0.12, "account": 0.060000000000000005}},
@@ -79,7 +79,7 @@ class ResultsTest < Minitest::Test
 
   def test_metadata
     d = decision
-    assert_equal "decisionnode-1.0", d.model
+    assert_equal "decisionnode-moe-0.9.0-rc1", d.model
     assert_equal 41, d.usage.input_tokens
     assert_equal "req_1", d.request_id
     assert_equal 23, d.latency_ms
@@ -121,7 +121,7 @@ class ResultsTest < Minitest::Test
   end
 
   def test_model_limits
-    m = DecisionNode::ModelInfo.new("name" => "decisionnode-1.0", "description" => "d", "release_date" => "2026-10-01",
+    m = DecisionNode::ModelInfo.new("name" => "decisionnode-moe", "description" => "d", "release_date" => "2026-10-01",
                                     "max_input_tokens" => 32_768)
     assert_equal({ "max_input_tokens" => 32_768 }, m.limits)
   end
@@ -152,7 +152,7 @@ class ResultsTest < Minitest::Test
   end
 
   def test_model_info_sessions_and_batch
-    m = DecisionNode::ModelInfo.new("name" => "decisionnode-1.0", "context_tokens" => 32_768,
+    m = DecisionNode::ModelInfo.new("name" => "decisionnode-moe", "context_tokens" => 32_768,
                                     "sessions" => { "max_per_key" => 4 }, "batch" => { "add_bytes" => 10_485_760 })
     assert_equal 4, m.sessions["max_per_key"]
     assert_equal 4, m.limit(:sessions, :max_per_key)

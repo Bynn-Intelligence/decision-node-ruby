@@ -233,7 +233,8 @@ class DecisionNode
   # another because no worker of the model asked for was ready at once.
   # `served_model` is the model that answered (also Decision#model), from the
   # `x-decisionnode-fallback` header; `requested_model` the one asked for, from
-  # `x-decisionnode-requested-model` (nil when the header is absent).
+  # `x-decisionnode-requested-model`: the family id for a family id or an older
+  # id, the pinned id for a pinned id (nil when the header is absent).
   Fallback = Struct.new(:served_model, :requested_model)
 
   # The result of the safety check that runs on every decision on the hosted API,

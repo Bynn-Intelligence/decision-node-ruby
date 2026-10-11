@@ -27,7 +27,7 @@ class FallbackTest < Minitest::Test
   def test_fallback_is_sent_only_when_given
     [true, false].each do |value|
       http = FakeHTTP.new(ok)
-      client(http).decide(state: "s", questions: Q, model: "decisionnode-1.0", fallback: value)
+      client(http).decide(state: "s", questions: Q, model: "decisionnode-moe", fallback: value)
       assert_equal value, http.calls.first.json["fallback"]
       assert_equal %w[model state questions fallback], http.calls.first.json.keys
     end
@@ -35,7 +35,7 @@ class FallbackTest < Minitest::Test
     http = FakeHTTP.new(ok)
     client(http).decide(state: "s", questions: Q)
     refute http.calls.first.json.key?("fallback")
-    assert_equal JSON.generate({ "model" => "decisionnode-latest", "state" => "s", "questions" => Q }), http.calls.first.body
+    assert_equal JSON.generate({ "model" => "decisionnode-moe", "state" => "s", "questions" => Q }), http.calls.first.body
   end
 
   def test_fallback_follows_the_boosters
@@ -102,31 +102,31 @@ class FallbackTest < Minitest::Test
   # ---- the response
 
   def test_a_fallback_answer
-    http = FakeHTTP.new(FakeHTTP.json(200, truth_body.merge("model" => "decisionnode-1.0-flash"),
-                                      "x-decisionnode-fallback" => "decisionnode-1.0-flash",
-                                      "x-decisionnode-requested-model" => "decisionnode-1.0"))
-    d = client(http).decide(questions: Q, model: "decisionnode-1.0")
-    assert_equal "decisionnode-1.0-flash", d.model
-    assert_equal DecisionNode::Fallback.new("decisionnode-1.0-flash", "decisionnode-1.0"), d.fallback
-    assert_equal ["decisionnode-1.0-flash", "decisionnode-1.0"], [d.fallback.served_model, d.fallback.requested_model]
+    http = FakeHTTP.new(FakeHTTP.json(200, truth_body.merge("model" => "decisionnode-flash-0.9.0-rc1"),
+                                      "x-decisionnode-fallback" => "decisionnode-flash-0.9.0-rc1",
+                                      "x-decisionnode-requested-model" => "decisionnode-moe-0.9.0-rc1"))
+    d = client(http).decide(questions: Q, model: "decisionnode-moe")
+    assert_equal "decisionnode-flash-0.9.0-rc1", d.model
+    assert_equal DecisionNode::Fallback.new("decisionnode-flash-0.9.0-rc1", "decisionnode-moe-0.9.0-rc1"), d.fallback
+    assert_equal ["decisionnode-flash-0.9.0-rc1", "decisionnode-moe-0.9.0-rc1"], [d.fallback.served_model, d.fallback.requested_model]
   end
 
   def test_an_ordinary_answer_has_no_fallback
     d = client(FakeHTTP.new(ok)).decide(questions: Q)
     assert_nil d.fallback
 
-    d = client(FakeHTTP.new(ok("x-decisionnode-fallback" => "decisionnode-1.0-flash"))).decide(questions: Q)
-    assert_equal DecisionNode::Fallback.new("decisionnode-1.0-flash", nil), d.fallback
+    d = client(FakeHTTP.new(ok("x-decisionnode-fallback" => "decisionnode-flash-0.9.0-rc1"))).decide(questions: Q)
+    assert_equal DecisionNode::Fallback.new("decisionnode-flash-0.9.0-rc1", nil), d.fallback
   end
 
   def test_batch_results_read_the_fallback_headers
     line = { "custom_id" => "a", "status" => 200, "body" => truth_body,
-             "headers" => { "X-DecisionNode-Fallback" => "decisionnode-1.0-flash", "x-decisionnode-requested-model" => "decisionnode-1.0" } }
+             "headers" => { "X-DecisionNode-Fallback" => "decisionnode-flash-0.9.0-rc1", "x-decisionnode-requested-model" => "decisionnode-moe-0.9.0-rc1" } }
     plain = { "custom_id" => "b", "status" => 200, "body" => truth_body, "headers" => {} }
     text = [line, plain].map { |l| JSON.generate(l) }.join("\n")
     http = FakeHTTP.new(DecisionNode::HTTPResponse.new(200, { "content-type" => "application/x-ndjson" }, "#{text}\n"))
     first, second = client(http).batches.results("batch_01J9ZB8Q3T").to_a
-    assert_equal DecisionNode::Fallback.new("decisionnode-1.0-flash", "decisionnode-1.0"), first.decision.fallback
+    assert_equal DecisionNode::Fallback.new("decisionnode-flash-0.9.0-rc1", "decisionnode-moe-0.9.0-rc1"), first.decision.fallback
     assert_nil second.decision.fallback
   end
 end

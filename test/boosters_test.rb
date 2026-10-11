@@ -51,7 +51,7 @@ class BoostersTest < Minitest::Test
       http = FakeHTTP.new(ok)
       client(http).decide(state: "s", questions: Q, boosters: boosters)
       refute http.calls.first.json.key?("boosters"), boosters.inspect
-      assert_equal JSON.generate({ "model" => "decisionnode-latest", "state" => "s", "questions" => Q }), http.calls.first.body
+      assert_equal JSON.generate({ "model" => "decisionnode-moe", "state" => "s", "questions" => Q }), http.calls.first.body
     end
   end
 
@@ -135,22 +135,22 @@ class BoostersTest < Minitest::Test
   end
 
   def test_a_fine_tuned_model_name_is_sent_as_given_and_the_pinned_name_read_back
-    http = FakeHTTP.new(FakeHTTP.json(200, truth_body.merge("model" => "decisionnode-1.0-flash@acme/fraud:3"),
-                                      "x-decisionnode-model" => "decisionnode-1.0-flash@acme/fraud:3"))
-    d = client(http).decide(questions: Q, model: "decisionnode-1.0-flash@acme/fraud")
-    assert_equal "decisionnode-1.0-flash@acme/fraud", http.calls.first.json["model"]
-    assert_equal "decisionnode-1.0-flash@acme/fraud:3", d.model
+    http = FakeHTTP.new(FakeHTTP.json(200, truth_body.merge("model" => "decisionnode-moe@acme/fraud:3"),
+                                      "x-decisionnode-model" => "decisionnode-moe@acme/fraud:3"))
+    d = client(http).decide(questions: Q, model: "decisionnode-moe@acme/fraud")
+    assert_equal "decisionnode-moe@acme/fraud", http.calls.first.json["model"]
+    assert_equal "decisionnode-moe@acme/fraud:3", d.model
 
     http = FakeHTTP.new(ok)
-    client(http, model: "decisionnode-1.0-flash@acme/fraud:3").decide(questions: Q)
-    assert_equal "decisionnode-1.0-flash@acme/fraud:3", http.calls.first.json["model"]
+    client(http, model: "decisionnode-moe@acme/fraud:3").decide(questions: Q)
+    assert_equal "decisionnode-moe@acme/fraud:3", http.calls.first.json["model"]
   end
 
   # ---- the response
 
   def evidence_body
     {
-      "model" => "decisionnode-1.0",
+      "model" => "decisionnode-moe-0.9.0-rc1",
       "answers" => { "q" => { "type" => "truth", "truth" => 0.97 } },
       "evidence" => {
         "age" => {
@@ -352,14 +352,14 @@ class BoostersTest < Minitest::Test
 
   def test_models_read_fine_tuned_entries
     http = FakeHTTP.new(FakeHTTP.json(200, { "models" => [
-                                        { "name" => "decisionnode-1.0-flash", "description" => "d", "release_date" => "2026-10-01",
-                                          "version" => "decisionnode-1.0-flash-2026-10-01", "max_images" => 16 },
-                                        { "name" => "decisionnode-1.0-flash@acme/fraud:3", "description" => "Claims fraud",
-                                          "release_date" => "2026-10-09", "version" => "decisionnode-1.0-flash@acme/fraud:3",
-                                          "fine_tuned" => true, "base" => "decisionnode-1.0-flash-2026-10-01",
+                                        { "name" => "decisionnode-moe", "description" => "d", "release_date" => "2026-10-01",
+                                          "version" => "decisionnode-moe-0.9.0-rc1", "alias" => "decisionnode-moe", "max_images" => 16 },
+                                        { "name" => "decisionnode-moe@acme/fraud:3", "description" => "Claims fraud",
+                                          "release_date" => "2026-10-09", "version" => "decisionnode-moe@acme/fraud:3",
+                                          "fine_tuned" => true, "base" => "decisionnode-moe-0.9.0-rc1",
                                           "adapter_version" => 3, "status" => "deployed", "max_images" => 16 },
-                                        { "name" => "decisionnode-1.0-flash@acme/fraud:4", "description" => "Claims fraud",
-                                          "release_date" => "2026-10-09", "fine_tuned" => true, "base" => "decisionnode-1.0-flash",
+                                        { "name" => "decisionnode-moe@acme/fraud:4", "description" => "Claims fraud",
+                                          "release_date" => "2026-10-09", "fine_tuned" => true, "base" => "decisionnode-moe",
                                           "adapter_version" => "4", "status" => "ready" }
                                       ] }))
     catalogue, deployed, ready = client(http).models
@@ -368,7 +368,7 @@ class BoostersTest < Minitest::Test
     assert_nil catalogue.base
     assert_nil catalogue.adapter_version
     assert_nil catalogue.status
-    assert_equal [true, "decisionnode-1.0-flash-2026-10-01", 3, "deployed"],
+    assert_equal [true, "decisionnode-moe-0.9.0-rc1", 3, "deployed"],
                  [deployed.fine_tuned, deployed.base, deployed.adapter_version, deployed.status]
     assert deployed.fine_tuned?
     assert_equal true, deployed.limits["fine_tuned"]
@@ -378,13 +378,13 @@ class BoostersTest < Minitest::Test
   end
 
   def test_held_limits_are_found_for_a_fine_tuned_name
-    models = { "models" => [{ "name" => "decisionnode-1.0-flash@acme/fraud", "description" => "d", "release_date" => "2026-10-09",
+    models = { "models" => [{ "name" => "decisionnode-moe@acme/fraud", "description" => "d", "release_date" => "2026-10-09",
                               "fine_tuned" => true, "max_images" => 1 }] }
     http = FakeHTTP.new(FakeHTTP.json(200, models))
     dn = client(http)
     dn.models
     err = assert_raises(DecisionNode::ValidationError) do
-      dn.check_request("decide", questions: Q, images: IMAGES, model: "decisionnode-1.0-flash@acme/fraud")
+      dn.check_request("decide", questions: Q, images: IMAGES, model: "decisionnode-moe@acme/fraud")
     end
     assert_equal 1, err.entries.first.dig("ctx", "max_length")
   end

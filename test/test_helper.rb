@@ -63,7 +63,7 @@ module ClientHelpers
   end
 
   def truth_body(value = 0.5, id: "q")
-    { "model" => "decisionnode-1.0", "answers" => { id => { "type" => "truth", "truth" => value } },
+    { "model" => "decisionnode-moe-0.9.0-rc1", "answers" => { id => { "type" => "truth", "truth" => value } },
       "usage" => { "input_tokens" => 5, "output_tokens" => 0 } }
   end
 end

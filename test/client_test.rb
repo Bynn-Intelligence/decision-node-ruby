@@ -18,7 +18,7 @@ class ClientTest < Minitest::Test
     assert_equal "Bearer dn_test_key", call.headers["Authorization"]
     assert_equal "application/json", call.headers["Content-Type"]
     assert_equal "decisionnode-ruby/#{DecisionNode::VERSION}", call.headers["User-Agent"]
-    assert_equal({ "model" => "decisionnode-latest", "state" => { "ticket" => "charged twice" },
+    assert_equal({ "model" => "decisionnode-moe", "state" => { "ticket" => "charged twice" },
                    "questions" => { "q" => { "type" => "truth", "instructions" => "Escalate?" } } }, call.json)
   end
 
@@ -29,12 +29,12 @@ class ClientTest < Minitest::Test
   end
 
   def test_models_is_a_get_without_body
-    http = FakeHTTP.new(FakeHTTP.json(200, { "models" => [{ "name" => "decisionnode-1.0" }] }))
+    http = FakeHTTP.new(FakeHTTP.json(200, { "models" => [{ "name" => "decisionnode-moe" }] }))
     models = client(http).models
     assert_equal "GET", http.calls.first.method
     assert_nil http.calls.first.body
     refute http.calls.first.headers.key?("Content-Type")
-    assert_equal "decisionnode-1.0", models.first.name
+    assert_equal "decisionnode-moe", models.first.name
   end
 
   def test_decide_raw_sends_the_body_as_given
@@ -50,7 +50,7 @@ class ClientTest < Minitest::Test
       id, q = call.json["questions"].first
       answer = { "type" => q["type"], "truth" => 0.1, "choice" => "a", "score" => 1.0, "confidence" => 0.9,
                  "probabilities" => {}, "legend" => {} }
-      FakeHTTP.json(200, { "model" => "decisionnode-1.0", "answers" => { id => answer } })
+      FakeHTTP.json(200, { "model" => "decisionnode-moe-0.9.0-rc1", "answers" => { id => answer } })
     end)
     dn = client(http)
     assert_instance_of DecisionNode::TruthAnswer, dn.check(state: "s", instructions: "?", if_true: "y")
@@ -150,12 +150,12 @@ class ClientTest < Minitest::Test
   def test_environment_and_precedence
     ENV["DECISIONNODE_API_KEY"] = "env_key"
     ENV["DECISIONNODE_BASE_URL"] = "https://env.example.test/"
-    ENV["DECISIONNODE_MODEL"] = "decisionnode-flash-latest"
+    ENV["DECISIONNODE_MODEL"] = "decisionnode-flash"
     dn = DecisionNode.new
     assert_equal "https://env.example.test", dn.base_url
-    assert_equal "decisionnode-flash-latest", dn.model
-    dn = DecisionNode.new(model: "decisionnode-1.0", base_url: "https://arg.example.test")
-    assert_equal "decisionnode-1.0", dn.model
+    assert_equal "decisionnode-flash", dn.model
+    dn = DecisionNode.new(model: "decisionnode-moe", base_url: "https://arg.example.test")
+    assert_equal "decisionnode-moe", dn.model
     assert_equal "https://arg.example.test", dn.base_url
     refute_includes dn.inspect, "env_key"
   end
@@ -163,19 +163,19 @@ class ClientTest < Minitest::Test
   def test_empty_arguments_count_as_not_given
     ENV["DECISIONNODE_API_KEY"] = "env_key"
     ENV["DECISIONNODE_BASE_URL"] = "https://env.example.test"
-    ENV["DECISIONNODE_MODEL"] = "decisionnode-1.0"
+    ENV["DECISIONNODE_MODEL"] = "decisionnode-moe"
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
     dn = DecisionNode.new(api_key: "", base_url: "", model: "", http_client: http)
     assert_equal "https://env.example.test", dn.base_url
-    assert_equal "decisionnode-1.0", dn.model
+    assert_equal "decisionnode-moe", dn.model
     dn.decide(questions: { "q" => DecisionNode.truth("?") }, model: "")
     assert_equal "Bearer env_key", http.calls.first.headers["Authorization"]
-    assert_equal "decisionnode-1.0", http.calls.first.json["model"]
+    assert_equal "decisionnode-moe", http.calls.first.json["model"]
     ENV.delete("DECISIONNODE_BASE_URL")
     ENV.delete("DECISIONNODE_MODEL")
     dn = DecisionNode.new(base_url: "", model: "")
     assert_equal "https://api.decisionnode.com", dn.base_url
-    assert_equal "decisionnode-latest", dn.model
+    assert_equal "decisionnode-moe", dn.model
   end
 
   def test_helpers_take_images_and_model
@@ -195,12 +195,12 @@ class ClientTest < Minitest::Test
     end)
     dn = client(http)
     img = DecisionNode::Image.new("i", url: "https://example.com/i.png")
-    dn.check(state: "s", instructions: "?", images: [img], model: "decisionnode-1.0-flash")
-    dn.classify(state: "s", instructions: "?", options: %w[a b], images: [img], model: "decisionnode-1.0-flash")
-    dn.score(state: "s", instructions: "?", levels: %w[lo hi], images: [img], model: "decisionnode-1.0-flash")
-    dn.gate(action: "a", images: [img], model: "decisionnode-1.0-flash")
+    dn.check(state: "s", instructions: "?", images: [img], model: "decisionnode-flash")
+    dn.classify(state: "s", instructions: "?", options: %w[a b], images: [img], model: "decisionnode-flash")
+    dn.score(state: "s", instructions: "?", levels: %w[lo hi], images: [img], model: "decisionnode-flash")
+    dn.gate(action: "a", images: [img], model: "decisionnode-flash")
     http.calls.each do |c|
-      assert_equal "decisionnode-1.0-flash", c.json["model"]
+      assert_equal "decisionnode-flash", c.json["model"]
       assert_equal [{ "id" => "i", "url" => "https://example.com/i.png" }], c.json["images"]
     end
   end
@@ -216,7 +216,7 @@ class ClientTest < Minitest::Test
   def test_defaults
     dn = DecisionNode.new
     assert_equal "https://api.decisionnode.com", dn.base_url
-    assert_equal "decisionnode-latest", dn.model
+    assert_equal "decisionnode-moe", dn.model
     assert_in_delta 10.0, dn.timeout
     assert_equal 2, dn.max_retries
     assert_same DecisionNode, DecisionNode::Client
