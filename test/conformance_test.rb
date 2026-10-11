@@ -18,7 +18,7 @@ module Conformance
   ROOT = ENV.fetch("DECISIONNODE_CONFORMANCE_DIR", "").then { |dir| dir.empty? ? nil : File.expand_path(dir) }
   KINDS = %w[requests responses errors behaviour constants].freeze
   ENV_VARS = %w[DECISIONNODE_API_KEY DECISIONNODE_BASE_URL DECISIONNODE_MODEL].freeze
-  EXACT = %w[probabilities legend raw entries safety body limits evidence boosters fallback].freeze
+  EXACT = %w[probabilities legend raw entries safety body limits evidence boosters fallback cost].freeze
   # Compared whole and in their key order too: evidence in the request's order, an
   # error's boosters in the header's.
   ORDERED = %w[evidence boosters].freeze
@@ -207,7 +207,13 @@ module Conformance
   def norm_usage(usage)
     usage && { "input_tokens" => usage.input_tokens, "output_tokens" => usage.output_tokens,
                "video_frames" => usage.video_frames, "video_seconds" => usage.video_seconds,
-               "booster_tokens" => usage.booster_tokens, "boosters" => usage.boosters }
+               "booster_tokens" => usage.booster_tokens, "boosters" => usage.boosters,
+               "cost" => norm_cost(usage.cost) }
+  end
+
+  def norm_cost(cost)
+    cost && { "usd" => cost.usd, "model_usd" => cost.model_usd, "boosters_usd" => cost.boosters_usd,
+              "free_tier" => cost.free_tier }
   end
 
   AGE_FIELDS = %w[image faces age_years low high confidence].freeze

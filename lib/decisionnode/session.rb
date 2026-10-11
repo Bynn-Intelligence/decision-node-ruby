@@ -4,15 +4,30 @@ require "json"
 require "uri"
 
 class DecisionNode
+  # A frame message's usage: its token counts and its cost, or nil when the
+  # message has none.
+  module FrameUsage
+    private
+
+    def frame_usage(usage)
+      return nil unless usage.is_a?(Hash)
+
+      Usage.new(usage["input_tokens"], usage["output_tokens"], nil, nil, nil, nil, Cost.parse(usage["cost"]))
+    end
+  end
+  private_constant :FrameUsage
+
   # The reply to one session frame.
   class Reply
+    include FrameUsage
+
     # The `seq` of the frame answered.
     attr_reader :seq
     # Question id to typed Answer, as in a Decision.
     attr_reader :answers
     # The `seq` of each frame this frame superseded, in arrival order, or nil.
     attr_reader :dropped
-    # Token counts of this frame, a Usage.
+    # Token counts of this frame and what it cost, a Usage.
     attr_reader :usage
     # The worker's time for this frame, in milliseconds.
     attr_reader :latency_ms
@@ -26,7 +41,7 @@ class DecisionNode
       @seq = raw["seq"]
       @answers = Answer.map(raw["answers"])
       @dropped = raw["dropped"]
-      @usage = Usage.new(raw.dig("usage", "input_tokens"), raw.dig("usage", "output_tokens")) if raw["usage"].is_a?(Hash)
+      @usage = frame_usage(raw["usage"])
       @latency_ms = raw["latency_ms"]
       @safety = raw["safety"]
     end
@@ -40,6 +55,8 @@ class DecisionNode
   # A frame the session could not answer. A value, never raised: the session
   # stays open and the next frame can be sent.
   class FrameError
+    include FrameUsage
+
     # The frame's `seq`, or nil when the message could not be read as a frame.
     attr_reader :seq
     attr_reader :error_type, :message, :category
@@ -57,7 +74,7 @@ class DecisionNode
       @message = raw.dig("error", "message")
       @category = raw.dig("error", "category")
       @retry_after_ms = raw["retry_after_ms"]
-      @usage = Usage.new(raw.dig("usage", "input_tokens"), raw.dig("usage", "output_tokens")) if raw["usage"].is_a?(Hash)
+      @usage = frame_usage(raw["usage"])
       @safety = raw["safety"]
     end
   end

@@ -153,7 +153,7 @@ end
 
 | Class | Fields |
 |---|---|
-| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `usage.video_frames`, `usage.video_seconds`, `usage.booster_tokens`, `usage.boosters`, `evidence` (see "Boosters"), `fallback` (see "Fallback"), `warnings`, `request_id`, `latency_ms`, `safety`, `raw` |
+| `Decision` | `answers` (by question id, also `decision["id"]`), `model` (the resolved version), `usage.input_tokens`, `usage.output_tokens`, `usage.video_frames`, `usage.video_seconds`, `usage.booster_tokens`, `usage.boosters`, `usage.cost`, `evidence` (see "Boosters"), `fallback` (see "Fallback"), `warnings`, `request_id`, `latency_ms`, `safety`, `raw` |
 | `TruthAnswer` | `truth` |
 | `ChoiceAnswer` | `choice`, `confidence`, `probabilities` (by option name, exactly as sent) |
 | `ScoreAnswer` | `score`, `confidence`, `probabilities` (by level index, an Integer), `legend` (level index to the level as sent) |
@@ -165,6 +165,8 @@ end
 Answers are read by question id. An answer of a type this version does not know is returned as a `DecisionNode::UnknownAnswer` with its `type` and `raw` fields, so the rest of the decision still parses. So is an answer of a known type with a field missing or of the wrong type (a `truth` answer without a number in `truth`, for example): the decision does not fail. All answer classes derive from `DecisionNode::Answer`.
 
 A token count or `latency_ms` the server did not send is `nil`, never 0. So are `usage.video_frames` and `usage.video_seconds` for a request without videos (`warnings` is then an empty Array), and `evidence`, `usage.booster_tokens` and `usage.boosters` for a request without boosters. `fallback` is `nil` on an ordinary answer.
+
+`usage.cost` is what the answer cost, a `DecisionNode::Cost` with `usd`, `model_usd` and `boosters_usd` in USD and `free_tier` (true when the free tier paid for it). It is read as sent, never summed by the SDK, and `nil` when the response has none. A batch result's decision and a session frame's reply carry it too.
 
 ## Images
 

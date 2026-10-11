@@ -226,8 +226,27 @@ class DecisionNode
   # API read (an Integer) and the seconds of video they cover (a number as
   # received); for a request that named boosters, `booster_tokens` (the share
   # of `input_tokens` the boosters' readings take) and `boosters` (the booster
-  # calls billed). Each is nil when the response has none.
-  Usage = Struct.new(:input_tokens, :output_tokens, :video_frames, :video_seconds, :booster_tokens, :boosters)
+  # calls billed); `cost`, what the answer cost (a Cost). Each is nil when the
+  # response has none.
+  Usage = Struct.new(:input_tokens, :output_tokens, :video_frames, :video_seconds, :booster_tokens, :boosters,
+                     :cost)
+
+  # What an answer cost, Usage#cost: `usd` in all, `model_usd` for the model,
+  # `boosters_usd` for the boosters (each the JSON number as received, in USD)
+  # and `free_tier` (true when the free tier paid for it). Read as sent: `usd`
+  # is the server's figure, never the sum of the parts here.
+  Cost = Struct.new(:usd, :model_usd, :boosters_usd, :free_tier) do
+    # The `cost` of a response's usage, or nil when it has none. An amount
+    # that is not a number, or a `free_tier` that is not true or false, is nil.
+    def self.parse(value)
+      return nil unless value.is_a?(Hash)
+
+      amount = ->(v) { v.is_a?(Integer) || v.is_a?(Float) ? v : nil }
+      free = value["free_tier"]
+      new(amount.call(value["usd"]), amount.call(value["model_usd"]), amount.call(value["boosters_usd"]),
+          [true, false].include?(free) ? free : nil)
+    end
+  end
 
   # A fallback answer, Decision#fallback: a request for one model answered by
   # another because no worker of the model asked for was ready at once.
@@ -355,7 +374,8 @@ class DecisionNode
                          usage["video_frames"].is_a?(Integer) ? usage["video_frames"] : nil,
                          usage["video_seconds"].is_a?(Numeric) ? usage["video_seconds"] : nil,
                          usage["booster_tokens"].is_a?(Integer) ? usage["booster_tokens"] : nil,
-                         usage["boosters"].is_a?(Integer) ? usage["boosters"] : nil)
+                         usage["boosters"].is_a?(Integer) ? usage["boosters"] : nil,
+                         Cost.parse(usage["cost"]))
       @evidence = Evidence.map(body["evidence"])
       @warnings = body["warnings"].is_a?(Array) ? body["warnings"].grep(String).freeze : [].freeze
       @request_id = headers["x-request-id"]
