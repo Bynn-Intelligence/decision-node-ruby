@@ -228,6 +228,8 @@ module Conformance
       AI_GENERATED_FIELDS.to_h { |k| [k, reading.public_send(k)] }
                          .merge("kind" => "ai_generated", "top_generator" => top && { "name" => top.name, "probability" => top.probability })
                          .merge("c2pa" => reading.c2pa)
+    when DecisionNode::OcrReading
+      { "kind" => "ocr", "image" => reading.image, "text" => reading.text, "truncated" => reading.truncated }
     when DecisionNode::UnknownReading
       { "kind" => "unknown", "raw" => reading.raw }
     else

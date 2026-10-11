@@ -248,7 +248,28 @@ class DecisionNode
     end
   end
 
+  # A reading of the `ocr` booster: the text the image shows, in reading
+  # order, or the answer to the booster's `prompt` option.
+  class OcrReading < Reading
+    # The text read; empty when the image shows none, which is a reading, not
+    # a failure.
+    attr_reader :text
+    # true when the reading was cut at the model's context limit.
+    attr_reader :truncated
+
+    def self.well_formed?(raw)
+      raw["image"].is_a?(String) && raw["text"].is_a?(String) &&
+        [true, false].include?(raw["truncated"])
+    end
+
+    def initialize(raw)
+      super
+      @text = raw["text"]
+      @truncated = raw["truncated"]
+    end
+  end
+
   class Reading
-    KINDS = { "age" => AgeReading, "ai_generated" => AiGeneratedReading }.freeze
+    KINDS = { "age" => AgeReading, "ai_generated" => AiGeneratedReading, "ocr" => OcrReading }.freeze
   end
 end

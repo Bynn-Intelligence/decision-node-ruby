@@ -388,4 +388,24 @@ class BoostersTest < Minitest::Test
     end
     assert_equal 1, err.entries.first.dig("ctx", "max_length")
   end
+  def test_ocr_readings
+    results = [
+      { "image" => "receipt", "text" => "Total 12.00", "truncated" => false },
+      { "image" => "blank", "text" => "", "truncated" => false },
+      { "image" => "long", "text" => "{}", "truncated" => true },
+      { "image" => "a", "text" => 740, "truncated" => false },
+      { "image" => "b", "text" => "Total", "truncated" => "yes" },
+      { "image" => "c", "truncated" => false },
+      # truncated is always sent: a reading without it is generic.
+      { "image" => "d", "text" => "Total" }
+    ]
+    body = truth_body.merge("evidence" => { "ocr" => { "status" => "ok", "results" => results } })
+    receipt, blank, long, *bad = client(FakeHTTP.new(FakeHTTP.json(200, body))).decide(questions: Q).evidence["ocr"].results
+    assert_instance_of DecisionNode::OcrReading, receipt
+    assert_equal ["receipt", "Total 12.00", false], [receipt.image, receipt.text, receipt.truncated]
+    # No text in the picture is a reading, not a failure.
+    assert_equal "", blank.text
+    assert(long.truncated)
+    bad.each { |r| assert_instance_of DecisionNode::UnknownReading, r }
+  end
 end
