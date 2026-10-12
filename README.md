@@ -56,8 +56,8 @@ Six builders return a question's wire form as a plain Hash:
 | `DecisionNode.choice(instructions, options)` | One option of a set. `options` is a Hash of name to description, or an Array of names. |
 | `DecisionNode.score(instructions, levels)` | A place on an ordered scale. `levels` is an Array, listed from low to high. |
 | `DecisionNode.number(instructions, min: nil, max: nil, step: nil)` | A value on a grid from `min` to `max` in steps of `step`. A bound left out is left out of the request, so the server's defaults apply: 0, 255 and 1. |
-| `DecisionNode.point(instructions, image: nil, units: nil)` | One spot in an image (see "Points and boxes"). |
-| `DecisionNode.box(instructions, image: nil, units: nil)` | A rectangle in an image (see "Points and boxes"). |
+| `DecisionNode.point(instructions, image: nil, units: nil, max: nil)` | One spot in an image, or with `max:` up to that many (see "Points and boxes"). |
+| `DecisionNode.box(instructions, image: nil, units: nil, max: nil)` | A rectangle in an image, or with `max:` up to that many (see "Points and boxes"). |
 
 `include DecisionNode::Questions` makes them available as `truth(...)`, `choice(...)`, `score(...)`, `number(...)`, `point(...)` and `box(...)`.
 
@@ -160,6 +160,8 @@ end
 | `NumberAnswer` | `number` (the most probable value of the grid), `expected` (the probability-weighted mean), `confidence` (the probability of `number`), `probabilities` (by the value exactly as the server wrote it, `"7"`, `"3.5"`) |
 | `PointAnswer` | `x`, `y`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
 | `BoxAnswer` | `x1`, `y1`, `x2`, `y2`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
+| `PointsAnswer` | `count`, `present`, `complete`, `points` (each `x`, `y`, `confidence`), `image`, `width`, `height`: a `point` question asked with `max:` |
+| `BoxesAnswer` | `count`, `present`, `complete`, `boxes` (each `x1`, `y1`, `x2`, `y2`, `confidence`), `image`, `width`, `height`: a `box` question asked with `max:` |
 | `ModelInfo` | `name`, `description`, `release_date`, `limits` (every other field of the entry), and `sessions` and `batch`, the session and Batch API limits; `limit("sessions", "max_per_key")` reads one. A fine-tuned model's entry also has `fine_tuned`, `base`, `adapter_version` and `status` (see "Fine-tuned models") |
 
 Answers are read by question id. An answer of a type this version does not know is returned as a `DecisionNode::UnknownAnswer` with its `type` and `raw` fields, so the rest of the decision still parses. So is an answer of a known type with a field missing or of the wrong type (a `truth` answer without a number in `truth`, for example): the decision does not fail. All answer classes derive from `DecisionNode::Answer`.
@@ -252,6 +254,31 @@ d["any_damage"].truth             # => 0.93
 | `image`, `width`, `height` | The image looked in and its size in pixels. |
 
 Every number is as the API sent it. Points and boxes go with `decide`, `decide_many` and batch requests. A request with a point or box question needs an image, and `image:` must name one of the request's images; these faults raise a `ValidationError` before anything is sent (see "Checked before sending").
+
+### Several places in one answer
+
+With `max:`, a point or box question answers up to that many places, one per thing the instructions describe, instead of the one best match: five cars in a lot are five boxes.
+
+```ruby
+d = dn.decide(
+  images: [DecisionNode::Image.new("lot", url: "https://files.example.com/lot/0917.jpg")],
+  questions: { cars: DecisionNode.box("Every car in the lot.", image: "lot", max: 8) }
+)
+cars = d["cars"]          # a DecisionNode::BoxesAnswer
+cars.count                # => 5
+cars.complete             # => 0.94
+cars.boxes.first.x1       # => 112 (each box: x1, y1, x2, y2 and its own confidence)
+```
+
+| Field | Meaning |
+|---|---|
+| `count` | How many places follow, 0 to `max`. |
+| `present` | The probability that at least one such thing is in the image. |
+| `complete` | The probability that nothing was left out: low when the image holds more than `max`, so raise `max` or narrow the instructions. |
+| `points` or `boxes` | The places from left to right by their centre (ties from the top), each with its own `confidence`, in the units of `units:`; an empty list when `count` is 0. |
+| `image`, `width`, `height` | The image looked in and its size in pixels. |
+
+`max:` is an Integer from 2 to 16; anything else raises a `ValidationError` before sending. When the client holds the model's entry from `models` and it states no `places.max_places`, a question with `max:` raises the API's `ValidationError` (`not_supported`) before sending too. A `point` question asked with `max:` is answered with a `DecisionNode::PointsAnswer` and a `box` question with a `DecisionNode::BoxesAnswer`, also in batch results.
 
 ## Videos
 
@@ -398,7 +425,8 @@ The SDK checks every fixed rule the API documents before any network call, so th
 | A question that is not a Hash or has no `type`; instructions, a state, an option description, a score level or a truth side that is not a String, Hash or Array; a choice or score without criteria, or with criteria of the wrong shape; a score with no levels | `ValidationError` with the server's `entries` | null |
 | A number grid: a bound that is not a finite number, beyond 2^53, `step` not above 0, more than 6 decimals in `min` or `step`, beyond the decimal bound, `min` above `max`, more than 4,096 values (counted in exact decimals) | `ValidationError` with the server's `entries` | null |
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's documented message | null |
-| A point or box question in a request with no image, without `image:` when the request has two or more, with an `image:` that is not one of the request's image ids, or with `units:` other than `"pixels"` and `"normalized"` | `ValidationError` with the server's `entries` | null |
+| A point or box question in a request with no image, without `image:` when the request has two or more, with an `image:` that is not one of the request's image ids, with `units:` other than `"pixels"` and `"normalized"`, or with a `max:` that is not an Integer from 2 to 16 | `ValidationError` with the server's `entries` | null |
+| A point or box question with `max:` when the held `/v1/models` entry of the model states no `places.max_places` (a session's open excepted) | `ValidationError` with the API's `not_supported` entry | null |
 | More than 16 images or more than 4 videos (a `too_long` entry on the list, after the state's and the questions' entries) | `ValidationError` with the server's `entries` | null |
 | An empty or repeated image id, an id longer than 64 characters (counted in characters, not bytes: "Image 1: its id is longer than 64 characters.", the image counted from 0), bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
 | An `https` image URL over 2,048 characters, with user information, on a port other than 443, without a host, or naming a private or reserved address literally | `BadRequestError` | `image_url_refused` |
@@ -635,7 +663,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.11) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.12) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 

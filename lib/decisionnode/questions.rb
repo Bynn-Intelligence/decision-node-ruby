@@ -69,27 +69,33 @@ class DecisionNode
     # One spot in an image, answered with its `x` and `y`. `image` is the id
     # of the image to look in (a string), needed when the request has two or
     # more; a reference by number ("Picture 2") goes in the instructions.
-    # `units` is "pixels" (the API's default) or "normalized". Each is left
-    # out of the wire form when not given.
+    # `units` is "pixels" (the API's default) or "normalized". `max` (an
+    # Integer from 2 to 16) asks for up to that many spots, one per thing the
+    # instructions describe, answered as a PointsAnswer. Each is left out of
+    # the wire form when not given.
     #
     #   point("Point to the yellow package closest to the robot arm.")
-    def point(instructions = nil, image: nil, units: nil)
-      place("point", instructions, image, units)
+    #   point("Each person standing on the platform.", max: 6)
+    def point(instructions = nil, image: nil, units: nil, max: nil)
+      place("point", instructions, image, units, max)
     end
 
     # A rectangle in an image, answered with its top-left (`x1`, `y1`) and
-    # bottom-right (`x2`, `y2`) corners. `image` and `units` as for #point.
+    # bottom-right (`x2`, `y2`) corners. `image`, `units` and `max` as for
+    # #point; with `max` the answer is a BoxesAnswer.
     #
     #   box("Draw a box around the damaged package.", image: "belt")
-    def box(instructions = nil, image: nil, units: nil)
-      place("box", instructions, image, units)
+    #   box("Every car in the lot.", image: "lot", max: 8)
+    def box(instructions = nil, image: nil, units: nil, max: nil)
+      place("box", instructions, image, units, max)
     end
 
-    def place(type, instructions, image, units)
+    def place(type, instructions, image, units, most)
       question = { "type" => type }
       question["instructions"] = instructions unless instructions.nil?
       question["image"] = image unless image.nil?
       question["units"] = units unless units.nil?
+      question["max"] = most unless most.nil?
       question
     end
     private_class_method :place
@@ -117,13 +123,13 @@ class DecisionNode
     end
 
     # See Questions.point.
-    def point(instructions = nil, image: nil, units: nil)
-      Questions.point(instructions, image: image, units: units)
+    def point(instructions = nil, image: nil, units: nil, max: nil)
+      Questions.point(instructions, image: image, units: units, max: max)
     end
 
     # See Questions.box.
-    def box(instructions = nil, image: nil, units: nil)
-      Questions.box(instructions, image: image, units: units)
+    def box(instructions = nil, image: nil, units: nil, max: nil)
+      Questions.box(instructions, image: image, units: units, max: max)
     end
   end
 end

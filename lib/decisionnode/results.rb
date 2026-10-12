@@ -12,6 +12,9 @@ class DecisionNode
       return UnknownAnswer.new({ "value" => raw }) unless raw.is_a?(Hash)
 
       klass = TYPES[raw["type"]]
+      # A point or box question asked with `max` answers a list of places,
+      # told by the answer's own list, so a batch line reads the same.
+      klass = PLACES[raw["type"]] if PLACES.key?(raw["type"]) && (raw.key?("points") || raw.key?("boxes"))
       klass&.well_formed?(raw) ? klass.new(raw) : UnknownAnswer.new(raw)
     end
 
@@ -215,11 +218,75 @@ class DecisionNode
 
   private_constant :PlaceAnswer
 
+  # What the answers to `point` and `box` questions asked with `max` share:
+  # up to `max` places, one per thing the instructions describe, in a fixed
+  # order (left to right by the centre, ties from the top). Every number is
+  # as received.
+  class PlacesAnswer < Answer
+    # How many places follow, 0 to the question's `max`.
+    attr_reader :count
+    # The probability that at least one such thing is in the image.
+    attr_reader :present
+    # The probability that nothing was left out: low when the image holds
+    # more than `max`.
+    attr_reader :complete
+    # The id of the image looked in, and its size in pixels.
+    attr_reader :image, :width, :height
+
+    def self.well_formed?(raw)
+      list = raw[self::LIST]
+      raw["count"].is_a?(Integer) && !raw["count"].negative? &&
+        number?(raw["present"]) && number?(raw["complete"]) &&
+        list.is_a?(Array) && list.all? { |p| p.is_a?(Hash) && self::PLACE.members.all? { |k| number?(p[k.to_s]) } } &&
+        raw["image"].is_a?(String) && number?(raw["width"]) && number?(raw["height"])
+    end
+
+    def initialize(raw)
+      super
+      @count = raw["count"]
+      @present = raw["present"]
+      @complete = raw["complete"]
+      @image = raw["image"]
+      @width = raw["width"]
+      @height = raw["height"]
+      @places = raw[self.class::LIST].map { |p| self.class::PLACE.new(*self.class::PLACE.members.map { |k| p[k.to_s] }) }.freeze
+    end
+  end
+
+  # The answer to a `point` question asked with `max`: `points`, each a
+  # PointsAnswer::Point with `x`, `y` and its own `confidence`.
+  class PointsAnswer < PlacesAnswer
+    # One spot of the answer.
+    Point = Struct.new(:x, :y, :confidence)
+    PLACE = Point
+    LIST = "points"
+
+    def points
+      @places
+    end
+  end
+
+  # The answer to a `box` question asked with `max`: `boxes`, each a
+  # BoxesAnswer::Box with `x1`, `y1`, `x2`, `y2` and its own `confidence`.
+  class BoxesAnswer < PlacesAnswer
+    # One rectangle of the answer.
+    Box = Struct.new(:x1, :y1, :x2, :y2, :confidence)
+    PLACE = Box
+    LIST = "boxes"
+
+    def boxes
+      @places
+    end
+  end
+
+  private_constant :PlacesAnswer
+
   class Answer
     TYPES = {
       "truth" => TruthAnswer, "noul" => TruthAnswer, "choice" => ChoiceAnswer,
       "score" => ScoreAnswer, "number" => NumberAnswer, "point" => PointAnswer, "box" => BoxAnswer
     }.freeze
+    PLACES = { "point" => PointsAnswer, "box" => BoxesAnswer }.freeze
   end
 
   # Token counts of a decision and, for a request with videos, the frames the

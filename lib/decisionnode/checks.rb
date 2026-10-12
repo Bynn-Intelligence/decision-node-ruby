@@ -40,6 +40,9 @@ class DecisionNode
     CUSTOM_ID_CHARS = 512
     MEDIA_TYPES = %w[image/jpeg image/png image/webp].freeze
     UNITS = %w[pixels normalized].freeze
+    # The places a point or box question may ask for with `max`.
+    PLACES_MIN = 2
+    PLACES_MAX = 16
     GRID_DEFAULTS = { "min" => 0, "max" => 255, "step" => 1 }.freeze
 
     # Literal addresses an image URL may not name (IPv4-mapped and NAT64
@@ -66,6 +69,8 @@ class DecisionNode
     # `images`; a session's images come with its frames, so there they are
     # the server's to judge.
     def request!(body, profile: :decide, limits: {}, entries: [], counts: [])
+      # A session's point and box questions are the server's, with max or without.
+      places_supported!(body, limits) unless profile == :session
       nesting!(body)
       entries = entries.dup
       deferred = []
@@ -438,6 +443,44 @@ class DecisionNode
       usage("Query parameter limit must be an integer from 1 to #{LIST_LIMIT_MAX}, got #{limit}.")
     end
 
+    # ---- several places
+
+    # The `max` of a point or box question asking for several places: an
+    # Integer from 2 to 16.
+    def places_max(most, loc, entries)
+      return if most.nil?
+
+      if !most.is_a?(Integer)
+        entries << entry("int_type", loc + ["max"], "Input should be a valid integer", most)
+      elsif most < PLACES_MIN
+        entries << entry("greater_than_equal", loc + ["max"], "Input should be greater than or equal to #{PLACES_MIN}",
+                         most, { "ge" => PLACES_MIN })
+      elsif most > PLACES_MAX
+        entries << entry("less_than_equal", loc + ["max"], "Input should be less than or equal to #{PLACES_MAX}",
+                         most, { "le" => PLACES_MAX })
+      end
+    end
+
+    # With the model's /v1/models entry held and no `places.max_places` in
+    # it, a question with `max` is the gateway's 422 not_supported, one entry
+    # per such question, before any other check. Nothing held: the server's.
+    def places_supported!(body, limits)
+      return if limits.nil? || limits.empty?
+
+      places = limits["places"]
+      held = places.is_a?(Hash) ? places["max_places"] : nil
+      return if held.is_a?(Numeric) && held.positive?
+
+      questions = body["questions"].is_a?(Hash) ? body["questions"] : {}
+      entries = questions.filter_map do |id, q|
+        next unless q.is_a?(Hash) && %w[point box].include?(q["type"]) && !q["max"].nil?
+
+        entry("not_supported", ["body", "questions", id, q["type"], "max"],
+              "Several places are not supported by this model version", q["max"])
+      end
+      raise invalid(entries) unless entries.empty?
+    end
+
     # ---- questions
 
     def question(id, q, entries, deferred, limits, image_ids)
@@ -489,6 +532,7 @@ class DecisionNode
         entries << entry("literal_error", loc + ["units"], "Input should be 'pixels' or 'normalized'", units,
                          { "expected" => "'pixels' or 'normalized'" })
       end
+      places_max(q["max"], loc, entries)
       instructions = q["instructions"]
       deferred << plain("#{q['type'].capitalize} question must have instructions: #{id}") if instructions.nil? || instructions == ""
     end

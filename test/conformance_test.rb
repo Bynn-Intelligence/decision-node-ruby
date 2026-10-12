@@ -179,8 +179,16 @@ module Conformance
 
   PLACE_FIELDS = %w[present confidence image width height].freeze
 
+  def norm_places(answer, list, fields)
+    { "kind" => list, "count" => answer.count, "present" => answer.present, "complete" => answer.complete,
+      list => answer.public_send(list).map { |p| fields.to_h { |k| [k, p.public_send(k)] } },
+      "image" => answer.image, "width" => answer.width, "height" => answer.height }
+  end
+
   def norm_answer(answer)
     case answer
+    when DecisionNode::PointsAnswer then norm_places(answer, "points", %w[x y confidence])
+    when DecisionNode::BoxesAnswer then norm_places(answer, "boxes", %w[x1 y1 x2 y2 confidence])
     when DecisionNode::PointAnswer
       %w[x y].concat(PLACE_FIELDS).to_h { |k| [k, answer.public_send(k)] }.merge("kind" => "point")
     when DecisionNode::BoxAnswer
@@ -398,8 +406,8 @@ module Conformance
       when "$score" then return DecisionNode.score(args["instructions"], args["levels"])
       when "$number"
         return DecisionNode.number(args["instructions"], min: args["min"], max: args["max"], step: args["step"])
-      when "$point" then return DecisionNode.point(args["instructions"], image: args["image"], units: args["units"])
-      when "$box" then return DecisionNode.box(args["instructions"], image: args["image"], units: args["units"])
+      when "$point" then return DecisionNode.point(args["instructions"], image: args["image"], units: args["units"], max: args["max"])
+      when "$box" then return DecisionNode.box(args["instructions"], image: args["image"], units: args["units"], max: args["max"])
       when "$booster" then return booster(args.transform_values { |v| decode(v, ctx) })
       when "$image" then return image(args.transform_values { |v| decode(v, ctx) })
       when "$video" then return video(args, ctx)
