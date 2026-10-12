@@ -67,6 +67,9 @@ class DecisionNode
   # The Batch API, a DecisionNode::Batches.
   attr_reader :batches
 
+  # Collections of faces, a DecisionNode::Collections.
+  attr_reader :collections
+
   # Every argument is optional.
   #
   # api_key::     the API key; else DECISIONNODE_API_KEY.
@@ -114,6 +117,7 @@ class DecisionNode
     @inflight = {}
     @inflight_lock = Mutex.new
     @batches = Batches.new(self)
+    @collections = Collections.new(self)
   end
 
   def inspect

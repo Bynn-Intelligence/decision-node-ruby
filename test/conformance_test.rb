@@ -241,9 +241,12 @@ module Conformance
     when DecisionNode::FaceDetectionReading
       { "kind" => "face_detection", "image" => reading.image, "faces" => reading.faces,
         "detections" => reading.detections.map { |d| { "box" => norm_box(d.box), "confidence" => d.confidence } } }
-    when DecisionNode::WantedPersonReading
-      { "kind" => "wanted_person", "image" => reading.image, "faces" => reading.faces,
-        "matches" => reading.matches.map { |m| { "box" => norm_box(m.box), "score" => m.score, "reference" => m.reference } } }
+    when DecisionNode::FaceRecognitionReading
+      { "kind" => "face_recognition", "image" => reading.image, "faces" => reading.faces,
+        "matches" => reading.matches.map do |m|
+          { "box" => norm_box(m.box), "score" => m.score, "collection" => m.collection, "reference" => m.reference,
+            "name" => m.name, "label" => m.label }
+        end }
     when DecisionNode::UnknownReading
       { "kind" => "unknown", "raw" => reading.raw }
     else
@@ -501,8 +504,32 @@ module Conformance
     when "run_batch" then client.run_batch(args["requests"], **kwargs(args.except("requests")))
     when "supervise" then supervise(client, args)
     when /\Abatches\.(.+)\z/ then batches(client.batches, Regexp.last_match(1), args)
+    when /\Acollections\.(.+)\z/ then collections(client.collections, Regexp.last_match(1), args)
     else client.public_send(method, **kwargs(args))
     end
+  end
+
+  # The collections calls (decided 2026-10-12): the ids positional, the rest
+  # as keywords, each passed only when the case gives it.
+  def collections(api, name, args)
+    ids = args.values_at("collection_id", "item_id").compact
+    rest = kwargs(args.except("collection_id", "item_id"))
+    rest.empty? ? api.public_send(name, *ids) : api.public_send(name, *ids, **rest)
+  end
+
+  # The collections calls' results, the API's objects as sent;
+  # "collections" is the list.
+  COLLECTION_KINDS = %w[collection collections item item_page deleted].freeze
+
+  def check_collection_result!(kind, expected, result, path)
+    if kind == "collections"
+      raise Fail, "#{path}: expected a list of collections, got #{result.class}" unless result.is_a?(Array)
+      raise Fail, "#{path}: expected #{expected.size} collections, got #{result.size}" unless expected.size == result.size
+
+      expected.zip(result).each_with_index { |(e, r), i| match!(e, r, "#{path}[#{i}]") }
+      return
+    end
+    match!(expected, result, path)
   end
 
   def batches(api, name, args)
@@ -787,6 +814,8 @@ module Conformance
       match!(exp["session"], norm_session(result), "session")
     elsif exp.key?("upload_ids")
       raise Fail, "upload_ids: expected #{exp['upload_ids']}, got #{result}" unless same?(exp["upload_ids"], result.to_a)
+    elsif (kind = COLLECTION_KINDS.find { |k| exp.key?(k) })
+      check_collection_result!(kind, exp[kind], result, kind)
     end
   end
 
@@ -848,6 +877,7 @@ module Conformance
 
       match!(spec.fetch("batch", {}), result.to_h, "#{path}.batch")
     when "batch_page" then match!(spec.fetch("batch_page", {}), result.to_h, "#{path}.batch_page")
+    when *COLLECTION_KINDS then check_collection_result!(spec["result"], spec.fetch(spec["result"], {}), result, "#{path}.#{spec['result']}")
     when "batch_results" then check_results_spec!(spec, result, path)
     when "batch_run"
       batch, results = result

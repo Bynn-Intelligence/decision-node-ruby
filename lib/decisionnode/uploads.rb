@@ -106,6 +106,12 @@ class DecisionNode
       [img.sha256, img.media_type]
     end
 
+    # Forgets uploads the API called stale, so the next image_wires uploads
+    # those images again.
+    def drop_uploads(upload_ids)
+      @uploads.drop(upload_ids)
+    end
+
     # The wire forms of a request's images and the upload ids the SDK placed in
     # them. URLs and upload ids go as given; a cached upload by its id whatever
     # its size; the other local images inline when all the local images total

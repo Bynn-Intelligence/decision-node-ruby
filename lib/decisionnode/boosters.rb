@@ -287,10 +287,11 @@ class DecisionNode
   # `confidence`, from 0 to 1.
   FaceDetection = Struct.new(:box, :confidence)
 
-  # One face a `wanted_person` reading matched: its `box` (a FaceBox), the
-  # match `score` from 0 to 1, and `reference`, the id of the list entry it
-  # matched (never a name or other personal detail).
-  WantedMatch = Struct.new(:box, :score, :reference)
+  # One face a `face_recognition` reading matched in a collection: its `box`
+  # (a FaceBox), the match `score` from 0 to 1, the `collection` searched, the
+  # matched item's `reference`, and its `name` (a public figure) or `label`
+  # (an item of your own collection that has one), each nil when absent.
+  FaceMatch = Struct.new(:box, :score, :collection, :reference, :name, :label)
 
   # The faces of a face reading, checked alike for both boosters.
   module FaceReadings
@@ -326,24 +327,29 @@ class DecisionNode
     end
   end
 
-  # A reading of the `wanted_person` booster: how many faces it checked, and
-  # each face that matched an entry of the workspace's list.
-  class WantedPersonReading < Reading
-    # How many faces were checked.
+  # A reading of the `face_recognition` booster: how many faces it searched,
+  # and each face that matched an item of the collection, by score.
+  class FaceRecognitionReading < Reading
+    # How many faces were searched.
     attr_reader :faces
-    # The faces that matched, in the order sent: each a WantedMatch. Empty
-    # when none did.
+    # The faces that matched, in the order sent: each a FaceMatch. Empty when
+    # none did.
     attr_reader :matches
 
     def self.well_formed?(raw)
       FaceReadings.counted?(raw) &&
-        FaceReadings.list?(raw, "matches") { |m| number?(m["score"]) && m["reference"].is_a?(String) }
+        FaceReadings.list?(raw, "matches") do |m|
+          number?(m["score"]) && m["collection"].is_a?(String) && m["reference"].is_a?(String) &&
+            %w[name label].all? { |k| m[k].nil? || m[k].is_a?(String) }
+        end
     end
 
     def initialize(raw)
       super
       @faces = raw["faces"]
-      @matches = raw["matches"].map { |m| WantedMatch.new(FaceBox.from(m["box"]), m["score"], m["reference"]) }.freeze
+      @matches = raw["matches"].map do |m|
+        FaceMatch.new(FaceBox.from(m["box"]), m["score"], m["collection"], m["reference"], m["name"], m["label"])
+      end.freeze
     end
   end
 
@@ -352,7 +358,7 @@ class DecisionNode
       "age" => AgeReading,
       "ai_generated" => AiGeneratedReading,
       "face_detection" => FaceDetectionReading,
-      "wanted_person" => WantedPersonReading,
+      "face_recognition" => FaceRecognitionReading,
       "ocr" => OcrReading
     }.freeze
   end
