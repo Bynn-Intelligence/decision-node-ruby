@@ -1,4 +1,7 @@
-# Runs only while the repository is public: nothing is bumped, tagged or published while it is private.
+# Runs only while the repository is public: nothing is bumped, tagged or
+# published while it is private. The one other change from the copied
+# workflow: the built gem is checked for names that must not ship before
+# anything is pushed or published.
 #
 # Auto-release bynn-decisionnode on every push to main: bump the patch in
 # version.rb, run the tests, build and push the gem, push the bump commit and
@@ -58,6 +61,7 @@ jobs:
 
       - run: bundle exec rake test
       - run: gem build bynn-decisionnode.gemspec
+      - run: python3 .github/scripts/check_names.py "bynn-decisionnode-${{ steps.bump.outputs.version }}.gem"
 
       # Sigstore build provenance over the exact gem artifact. rubygems.org
       # does not display it yet, but it is logged to the transparency log and

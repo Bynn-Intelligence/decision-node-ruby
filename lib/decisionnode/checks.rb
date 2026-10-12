@@ -69,8 +69,6 @@ class DecisionNode
     # `images`; a session's images come with its frames, so there they are
     # the server's to judge.
     def request!(body, profile: :decide, limits: {}, entries: [], counts: [])
-      # A session's point and box questions are the server's, with max or without.
-      places_supported!(body, limits) unless profile == :session
       nesting!(body)
       entries = entries.dup
       deferred = []
@@ -459,26 +457,6 @@ class DecisionNode
         entries << entry("less_than_equal", loc + ["max"], "Input should be less than or equal to #{PLACES_MAX}",
                          most, { "le" => PLACES_MAX })
       end
-    end
-
-    # With the model's /v1/models entry held and no `places.max_places` in
-    # it, a question with `max` is the gateway's 422 not_supported, one entry
-    # per such question, before any other check. Nothing held: the server's.
-    def places_supported!(body, limits)
-      return if limits.nil? || limits.empty?
-
-      places = limits["places"]
-      held = places.is_a?(Hash) ? places["max_places"] : nil
-      return if held.is_a?(Numeric) && held.positive?
-
-      questions = body["questions"].is_a?(Hash) ? body["questions"] : {}
-      entries = questions.filter_map do |id, q|
-        next unless q.is_a?(Hash) && %w[point box].include?(q["type"]) && !q["max"].nil?
-
-        entry("not_supported", ["body", "questions", id, q["type"], "max"],
-              "Several places are not supported by this model version", q["max"])
-      end
-      raise invalid(entries) unless entries.empty?
     end
 
     # ---- questions

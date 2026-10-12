@@ -100,32 +100,18 @@ class PlacesTest < Minitest::Test
     assert_empty http.calls
   end
 
-  def test_a_held_model_without_places_refuses_max_locally
-    [nil, {}, { "max_places" => 0 }].each do |places|
-      http = FakeHTTP.new(FakeHTTP.json(200, models_body(places)))
+  # Whether a model answers several places is the server's to say: a held
+  # models entry with or without places.max_places never refuses max locally.
+  def test_max_is_sent_whatever_the_held_models_entry_says
+    [nil, {}, { "max_places" => 0 }, { "max_places" => 16 }].each do |places|
+      http = FakeHTTP.new(FakeHTTP.json(200, models_body(places)), FakeHTTP.json(200, boxes_body))
       dn = client(http)
       dn.models
-      error = assert_raises(DecisionNode::ValidationError) do
-        dn.decide(images: [LOT], questions: { "cars" => DecisionNode.box("Every car.", max: 8),
-                                              "people" => DecisionNode.point("Each person.", max: 3),
-                                              "one" => DecisionNode.box("The red car.") })
-      end
-      assert_equal [{ "type" => "not_supported", "loc" => %w[body questions cars box max],
-                      "msg" => "Several places are not supported by this model version", "input" => 8 },
-                    { "type" => "not_supported", "loc" => %w[body questions people point max],
-                      "msg" => "Several places are not supported by this model version", "input" => 3 }], error.entries
-      assert_equal 1, http.calls.size # the models call only
-      # A question without max is unaffected, and a session's open is left to the server.
-      assert_nil dn.check_request("decide", images: [LOT], questions: { "one" => DecisionNode.box("The red car.") })
-      assert_nil dn.check_request("open_session", questions: { "cars" => DecisionNode.box("Every car.", max: 8) })
+      answer = dn.decide(images: [LOT], questions: { "cars" => DecisionNode.box("Every car.", max: 8) })["cars"]
+      assert_instance_of DecisionNode::BoxesAnswer, answer
+      assert_equal 8, http.calls.last.json.dig("questions", "cars", "max")
+      assert_nil dn.check_request("decide", images: [LOT], questions: { "cars" => DecisionNode.box("Every car.", max: 8) })
     end
-  end
-
-  def test_a_held_model_with_places_sends_max_and_nothing_held_leaves_it_to_the_server
-    http = FakeHTTP.new(FakeHTTP.json(200, models_body({ "max_places" => 16 })), FakeHTTP.json(200, boxes_body))
-    dn = client(http)
-    dn.models
-    assert_instance_of DecisionNode::BoxesAnswer, dn.decide(images: [LOT], questions: { "cars" => DecisionNode.box("Every car.", max: 8) })["cars"]
     assert_nil client(FakeHTTP.new).check_request("decide", images: [LOT], questions: { "cars" => DecisionNode.box("Every car.", max: 8) })
   end
 end

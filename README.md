@@ -278,7 +278,7 @@ cars.boxes.first.x1       # => 112 (each box: x1, y1, x2, y2 and its own confide
 | `points` or `boxes` | The places from left to right by their centre (ties from the top), each with its own `confidence`, in the units of `units:`; an empty list when `count` is 0. |
 | `image`, `width`, `height` | The image looked in and its size in pixels. |
 
-`max:` is an Integer from 2 to 16; anything else raises a `ValidationError` before sending. When the client holds the model's entry from `models` and it states no `places.max_places`, a question with `max:` raises the API's `ValidationError` (`not_supported`) before sending too. A `point` question asked with `max:` is answered with a `DecisionNode::PointsAnswer` and a `box` question with a `DecisionNode::BoxesAnswer`, also in batch results.
+`max:` is an Integer from 2 to 16; anything else raises a `ValidationError` before sending. Whether a model version answers several places is the API's to say: a version that does not answers the `ValidationError` it sends (`not_supported`). A `point` question asked with `max:` is answered with a `DecisionNode::PointsAnswer` and a `box` question with a `DecisionNode::BoxesAnswer`, also in batch results.
 
 ## Videos
 
@@ -426,7 +426,6 @@ The SDK checks every fixed rule the API documents before any network call, so th
 | A number grid: a bound that is not a finite number, beyond 2^53, `step` not above 0, more than 6 decimals in `min` or `step`, beyond the decimal bound, `min` above `max`, more than 4,096 values (counted in exact decimals) | `ValidationError` with the server's `entries` | null |
 | A choice with no options or more than 255, a score with more than 10 levels, a truth question with neither instructions nor criteria, a number, point or box question without instructions | `BadRequestError` with the API's documented message | null |
 | A point or box question in a request with no image, without `image:` when the request has two or more, with an `image:` that is not one of the request's image ids, with `units:` other than `"pixels"` and `"normalized"`, or with a `max:` that is not an Integer from 2 to 16 | `ValidationError` with the server's `entries` | null |
-| A point or box question with `max:` when the held `/v1/models` entry of the model states no `places.max_places` (a session's open excepted) | `ValidationError` with the API's `not_supported` entry | null |
 | More than 16 images or more than 4 videos (a `too_long` entry on the list, after the state's and the questions' entries) | `ValidationError` with the server's `entries` | null |
 | An empty or repeated image id, an id longer than 64 characters (counted in characters, not bytes: "Image 1: its id is longer than 64 characters.", the image counted from 0), bytes that are not JPEG, PNG or WebP or not of the declared type, over 10,485,760 bytes or 40,000,000 pixels, an upload reference with another media type, a URL that is not `https` | `BadRequestError` | `api_usage_error` |
 | An `https` image URL over 2,048 characters, with user information, on a port other than 443, without a host, or naming a private or reserved address literally | `BadRequestError` | `image_url_refused` |
