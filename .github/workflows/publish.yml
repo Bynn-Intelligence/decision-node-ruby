@@ -1,0 +1,83 @@
+# Runs only while the repository is public: nothing is bumped, tagged or published while it is private.
+#
+# Auto-release bynn-decisionnode on every push to main: bump the patch in
+# version.rb, run the tests, build and push the gem, push the bump commit and
+# tag back to main, and cut the GitHub release. The push back uses the
+# default GITHUB_TOKEN, which does not retrigger this workflow, and the bump
+# commit carries [skip publish] as a second guard.
+#
+# To ship without cutting a release (docs, CI tweaks), put [skip publish] in
+# the commit message.
+#
+# Publishes via RubyGems OIDC trusted publishing bound to the rubygems-publish
+# environment: no RUBYGEMS_API_KEY, no stored credential. configure-rubygems-
+# credentials exchanges the workflow id-token for a short-lived, scoped key
+# that its post-step revokes. The built gem is also attested with Sigstore
+# build provenance (verifiable via `gh attestation verify`), since rubygems.org
+# does not render a provenance panel of its own yet. Requires this repo +
+# workflow + environment registered as a trusted publisher on rubygems.org.
+name: Publish to RubyGems
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions: read-all
+
+jobs:
+  publish:
+    if: "github.event.repository.visibility == 'public' && !contains(github.event.head_commit.message, '[skip publish]')"
+    runs-on: ubuntu-latest
+    environment: rubygems-publish
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - id: bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          CURRENT=$(ruby -r./lib/decisionnode/version -e 'puts DecisionNode::VERSION')
+          NEW="${CURRENT%.*}.$(( ${CURRENT##*.} + 1 ))"
+          sed -i "s/VERSION = \"${CURRENT}\"/VERSION = \"${NEW}\"/" lib/decisionnode/version.rb
+          echo "version=${NEW}" >> "$GITHUB_OUTPUT"
+
+      - run: bundle exec rake test
+      - run: gem build bynn-decisionnode.gemspec
+
+      # Sigstore build provenance over the exact gem artifact. rubygems.org
+      # does not display it yet, but it is logged to the transparency log and
+      # verifiable with `gh attestation verify <gem> --repo <owner>/<repo>`.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: "bynn-decisionnode-${{ steps.bump.outputs.version }}.gem"
+
+      - run: |
+          git add lib/decisionnode/version.rb
+          git commit -m "Release v${{ steps.bump.outputs.version }} [skip publish]"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin HEAD:main "v${{ steps.bump.outputs.version }}"
+
+      # OIDC trusted publishing: exchange the workflow id-token for a short-
+      # lived, scoped rubygems.org key (revoked by the action's post-step), so
+      # no RUBYGEMS_API_KEY is stored. gem push then uses it with no env.
+      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+      - run: gem push "bynn-decisionnode-${{ steps.bump.outputs.version }}.gem"
+
+      - run: gh release create "v${{ steps.bump.outputs.version }}" --title "v${{ steps.bump.outputs.version }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
