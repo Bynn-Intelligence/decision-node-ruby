@@ -685,6 +685,21 @@ module Conformance
     text.split("\n").reject { |l| l.strip.empty? }.map { |l| JSON.parse(l, max_nesting: false) }
   end
 
+  # Every matching logged attempt carries one and the same value of the header
+  # (an Idempotency-Key kept across retries), at least `min` of them (2 by default).
+  def check_same_header!(spec, log)
+    name = spec["name"].downcase
+    hits = log.select do |r|
+      (spec["path_suffix"].nil? || r["path"].end_with?(spec["path_suffix"])) && (spec["method"].nil? || r["method"] == spec["method"])
+    end
+    values = hits.map { |r| (r["headers"] || {}).find { |k, _| k.downcase == name }&.last }
+    if hits.size < (spec["min"] || 2) || values.include?(nil) || values.uniq.size != 1
+      raise Fail, "same_header #{name}: expected one value on every attempt, got #{values.inspect}"
+    end
+    pattern = spec["pattern"]
+    raise Fail, "same_header #{name}: #{values.first.inspect} does not match #{pattern}" if pattern && !values.first.match?(Regexp.new(pattern))
+  end
+
   def check_request!(exp, got, where)
     raise Fail, "#{where} method: expected #{exp['method']}, got #{got['method']} #{got['path']}" unless got["method"] == exp["method"]
     raise Fail, "#{where} path: expected #{exp['path']}, got #{got['path']}" if exp.key?("path") && got["path"] != exp["path"]
@@ -1086,6 +1101,7 @@ module Conformance
     end
     check_sequence!(exp["request_sequence"], log) if exp.key?("request_sequence")
     check_counts!(exp["request_counts"], log) if exp.key?("request_counts")
+    check_same_header!(exp["same_header"], log) if exp.key?("same_header")
     check_events!(exp["session_events"], events) if exp.key?("session_events")
     in_range!(exp["pongs"], info["pongs"], "pongs") if exp.key?("pongs")
     check_outcome!(exp["outcome"], result, "outcome") if exp.key?("outcome")

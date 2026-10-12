@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "securerandom"
 require "uri"
 
 class DecisionNode
@@ -8,17 +9,21 @@ class DecisionNode
   # object as sent, a Hash with the API's field names; #list returns the
   # collections in the order sent.
   #
-  # `create` and `enroll` are retried only on 429 and 529, as a batch's create
-  # is: a retried enrollment would enroll the face twice and bill it twice.
-  # Reads and deletes are retried as every call is.
+  # `create` and `enroll` send an Idempotency-Key, a new UUID for each call and
+  # the same on every attempt of it, so the API creates, enrolls and bills once
+  # however often the call is tried. They retry as every call does, and also
+  # on a 409 `idempotency_in_progress` after its Retry-After; a 409
+  # `idempotency_key_reused` is raised. Reads and deletes carry no key. An
+  # answer the API replays for a repeated key is returned as sent.
   class Collections
     NAME_MAX = 80
     REFERENCE_MAX = 64
     LABEL_MAX = 128
     # The API's pattern, as its 422 names it, and the same rule matched on the
-    # whole string (Ruby's ^ and $ match at line ends).
-    REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]+$"
-    REFERENCE_RULE = /\A[A-Za-z0-9_.:-]+\z/
+    # whole string (Ruby's ^ and $ match at line ends). An empty reference
+    # fails the pattern, as the API answers it.
+    REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$"
+    REFERENCE_RULE = /\A[A-Za-z0-9_.:-]{1,64}\z/
     private_constant :NAME_MAX, :REFERENCE_MAX, :LABEL_MAX, :REFERENCE_PATTERN, :REFERENCE_RULE
 
     def initialize(client)
@@ -40,7 +45,7 @@ class DecisionNode
       entries.concat(string_entries(%w[body name], name, 1, NAME_MAX))
       raise Checks.invalid(entries) unless entries.empty?
 
-      call("POST", "/v1/collections", { "type" => type, "name" => name }, policy: :mutation)
+      call("POST", "/v1/collections", { "type" => type, "name" => name }, key: SecureRandom.uuid)
     end
 
     # The workspace's collections, then the public ones it may use
@@ -61,26 +66,29 @@ class DecisionNode
     end
 
     # Enrolls one face from one image (`POST /v1/collections/{id}/items`). The
-    # image is checked and sent as a decision sends one: a URL as given, local
-    # bytes inline under the inline threshold, else uploaded. `reference` is
-    # 1 to 64 of A-Z, a-z, 0-9 and _ . : -; `label`, when given, at most 128
-    # characters.
+    # image is sent as a decision sends one: a URL as given, local bytes inline
+    # under the inline threshold, else uploaded. Only a URL's rules are checked
+    # before sending; any other fault of the picture is the API's 422
+    # `image_unreadable`. `reference` is 1 to 64 of A-Z, a-z, 0-9 and _ . : -;
+    # `label`, when given, at most 128 characters.
     def enroll(collection_id, image:, reference:, label: nil)
       entries = []
       entries << Checks.entry("missing", %w[body image], "Field required", { "reference" => reference }) if image.nil?
-      entries.concat(string_entries(%w[body reference], reference, 1, REFERENCE_MAX, REFERENCE_RULE))
+      entries.concat(string_entries(%w[body reference], reference, 0, REFERENCE_MAX, REFERENCE_RULE, required: true))
       entries.concat(string_entries(%w[body label], label, 0, LABEL_MAX)) unless label.nil?
       raise Checks.invalid(entries) unless entries.empty?
 
       images = @client.__send__(:prepared_images, [image])
-      Checks.images!(images, limits: @client.__send__(:limits_for, nil))
+      Checks.image_url!(image.id, image.url) if image.is_a?(Image) && image.url
       path = "/v1/collections/#{segment(collection_id)}/items"
       2.times do |attempt|
         wires, placed = @client.__send__(:image_wires, images)
         body = { "image" => wires.first, "reference" => reference }
         body["label"] = label unless label.nil?
         begin
-          return call("POST", path, body, policy: :mutation)
+          # A resend after a stale upload carries a new upload id, so it is a
+          # new request with its own key.
+          return call("POST", path, body, key: SecureRandom.uuid)
         rescue BadRequestError => e
           raise unless attempt.zero? && !placed.empty? && Uploads::STALE_UPLOAD.include?(e.error_type)
 
@@ -107,8 +115,11 @@ class DecisionNode
 
     private
 
-    def call(method, path, body = nil, policy: :default)
-      parsed, = @client.__send__(:request, method, path, body, policy: policy)
+    def call(method, path, body = nil, key: nil)
+      return @client.__send__(:request, method, path, body).first if key.nil?
+
+      parsed, = @client.__send__(:request, method, path, body, policy: :idempotent,
+                                                               extra_headers: { "Idempotency-Key" => key })
       parsed
     end
 
@@ -120,8 +131,8 @@ class DecisionNode
 
     # A string field's 422 entry, as the API answers it: missing, not a
     # String, too short, too long, or (with a pattern) not matching it.
-    def string_entries(loc, value, least, most, rule = nil)
-      return least.positive? ? [Checks.entry("missing", loc, "Field required", nil)] : [] if value.nil?
+    def string_entries(loc, value, least, most, rule = nil, required: least.positive?)
+      return required ? [Checks.entry("missing", loc, "Field required", nil)] : [] if value.nil?
       return [Checks.entry("string_type", loc, "Input should be a valid string", value)] unless value.is_a?(String)
 
       if value.length < least

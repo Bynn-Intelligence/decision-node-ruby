@@ -798,13 +798,18 @@ class DecisionNode
   #          :mutation (batch create, add, finalize) only 429 and 529;
   #          :session_open never a 429 `session_limit_exceeded`;
   #          :ocr (a decision whose boosters name ocr) never a timeout, since
-  #          the server finishes that attempt and may bill it.
+  #          the server finishes that attempt and may bill it;
+  #          :idempotent (a call that carries its own Idempotency-Key, the
+  #          same on every attempt) as :default, and also a 409
+  #          `idempotency_in_progress` after its Retry-After.
   # timeout:: seconds for each attempt in place of the client's timeout.
+  # extra_headers:: headers this call adds, after the client's own.
   #
   # With a block, a 2xx body is handed to the block line by line as it
   # arrives (when the transport can stream), and the text returned is empty.
   # A stream that fails after its first line is not retried.
-  def request(method, path, body, encoded: false, policy: :default, content_type: nil, raw: false, timeout: nil, &on_line)
+  def request(method, path, body, encoded: false, policy: :default, content_type: nil, raw: false, timeout: nil,
+              extra_headers: nil, &on_line)
     raise AuthenticationError, "no API key: pass api_key: or set DECISIONNODE_API_KEY" if @api_key.nil?
 
     data = body.nil? || encoded ? body : encode(body)
@@ -815,6 +820,7 @@ class DecisionNode
     }
     headers["Content-Type"] = content_type || "application/json" unless data.nil?
     headers.merge!(@headers)
+    headers.merge!(extra_headers) if extra_headers
     url = @base_url + path
 
     attempt = 0
@@ -909,6 +915,8 @@ class DecisionNode
     case policy
     when :mutation then [429, 529].include?(error.status)
     when :session_open then RETRY_STATUSES.include?(error.status) && !error.is_a?(SessionLimitError)
+    when :idempotent
+      RETRY_STATUSES.include?(error.status) || (error.status == 409 && error.error_type == "idempotency_in_progress")
     else RETRY_STATUSES.include?(error.status)
     end
   end

@@ -2,8 +2,8 @@
 
 require "test_helper"
 
-# Collections of faces: each call's request, the retry rule of create and
-# enroll, the local checks, and the errors as the API sends them.
+# Collections of faces: each call's request, the Idempotency-Key and retries
+# of create and enroll, the local checks, and the errors as the API sends them.
 class CollectionsTest < Minitest::Test
   include ClientHelpers
 
@@ -93,28 +93,71 @@ class CollectionsTest < Minitest::Test
 
   # ---- retries
 
-  def test_create_and_enroll_retry_only_on_429_and_529
-    [[529, 2], [429, 2], [500, 1], [503, 1]].each do |status, attempts|
+  UUID_V4 = /\A\h{8}-\h{4}-4\h{3}-[89ab]\h{3}-\h{12}\z/
+
+  def keys(http)
+    http.calls.map { |c| c.headers["Idempotency-Key"] }
+  end
+
+  def test_create_and_enroll_retry_like_any_call_with_one_key_per_call
+    [529, 429, 500, 503].each do |status|
       http = FakeHTTP.new(error(status, "x", "busy"), FakeHTTP.json(201, collection))
-      dn = client(http)
-      begin
-        dn.collections.create(name: "Staff")
-      rescue DecisionNode::DecisionNodeError
-        nil
-      end
-      assert_equal attempts, http.calls.size, "create on #{status}"
+      assert_equal collection, client(http).collections.create(name: "Staff")
+      assert_equal 2, http.calls.size, "create on #{status}"
+      assert_match UUID_V4, keys(http).first
+      assert_equal 1, keys(http).uniq.size, "create keeps its key across attempts"
 
       http = FakeHTTP.new(error(status, "x", "busy"), FakeHTTP.json(201, item))
-      begin
-        client(http).collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042")
-      rescue DecisionNode::DecisionNodeError
-        nil
-      end
-      assert_equal attempts, http.calls.size, "enroll on #{status}"
+      assert_equal item, client(http).collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042")
+      assert_equal 2, http.calls.size, "enroll on #{status}"
+      assert_equal 1, keys(http).uniq.size, "enroll keeps its key across attempts"
     end
     http = FakeHTTP.new(DecisionNode::TimeoutError.new("slow"), FakeHTTP.json(201, item))
-    assert_raises(DecisionNode::TimeoutError) { client(http).collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042") }
+    assert_equal item, client(http).collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042")
+    assert_equal 2, http.calls.size
+    assert_equal 1, keys(http).uniq.size
+  end
+
+  def test_a_new_key_for_each_call
+    http = FakeHTTP.new(FakeHTTP.json(201, collection), FakeHTTP.json(201, collection))
+    dn = client(http)
+    2.times { dn.collections.create(name: "Staff") }
+    assert_equal 2, keys(http).uniq.size
+    keys(http).each { |k| assert_match UUID_V4, k }
+  end
+
+  def test_in_progress_is_retried_after_its_retry_after
+    busy = FakeHTTP.json(409, { "detail" => { "error_type" => "idempotency_in_progress",
+                                              "message" => "A request with this Idempotency-Key is still running." } },
+                         { "retry-after" => "1" })
+    http = FakeHTTP.new(busy, FakeHTTP.json(201, item, { "x-decisionnode-idempotent-replay" => "true" }))
+    dn = client(http)
+    assert_equal item, dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042")
+    assert_equal 2, http.calls.size
+    assert_equal [1.0], dn.sleeps
+    assert_equal 1, keys(http).uniq.size
+  end
+
+  def test_a_reused_key_is_raised_and_never_retried
+    reused = error(409, "idempotency_key_reused", "This Idempotency-Key was already used with a different request.")
+    http = FakeHTTP.new(reused, FakeHTTP.json(201, collection))
+    e = assert_raises(DecisionNode::DecisionNodeError) { client(http).collections.create(name: "Staff") }
+    assert_equal DecisionNode::DecisionNodeError, e.class
+    assert_equal [409, "idempotency_key_reused"], [e.status, e.error_type]
     assert_equal 1, http.calls.size
+  end
+
+  def test_reads_and_deletes_carry_no_key
+    http = FakeHTTP.new(FakeHTTP.json(200, { "collections" => [] }), FakeHTTP.json(200, collection),
+                        FakeHTTP.json(200, { "items" => [] }), FakeHTTP.json(200, { "id" => COL, "deleted" => true }),
+                        FakeHTTP.json(200, { "id" => ITEM, "deleted" => true }))
+    dn = client(http)
+    dn.collections.list
+    dn.collections.get(COL)
+    dn.collections.list_items(COL)
+    dn.collections.delete(COL)
+    dn.collections.delete_item(COL, ITEM)
+    assert_equal [nil] * 5, keys(http)
   end
 
   def test_reads_and_deletes_retry_as_usual
@@ -148,15 +191,20 @@ class CollectionsTest < Minitest::Test
   def test_enroll_checks_reference_and_label
     http = FakeHTTP.new
     dn = client(http)
-    pattern = "^[A-Za-z0-9_.:-]+$"
+    pattern = "^[A-Za-z0-9_.:-]{1,64}$"
     assert_entries([{ "type" => "string_pattern_mismatch", "loc" => %w[body reference],
                       "msg" => "String should match pattern '#{pattern}'", "input" => "emp 1042",
                       "ctx" => { "pattern" => pattern } }]) { dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp 1042") }
     assert_entries([{ "type" => "string_pattern_mismatch", "loc" => %w[body reference],
                       "msg" => "String should match pattern '#{pattern}'", "input" => "a\nb",
                       "ctx" => { "pattern" => pattern } }]) { dn.collections.enroll(COL, image: URL_IMAGE, reference: "a\nb") }
-    assert_entries([{ "type" => "string_too_short", "loc" => %w[body reference], "msg" => "String should have at least 1 character",
-                      "input" => "", "ctx" => { "min_length" => 1 } }]) { dn.collections.enroll(COL, image: URL_IMAGE, reference: "") }
+    # An empty reference fails the pattern, as the API answers it; a missing one is "missing".
+    assert_entries([{ "type" => "string_pattern_mismatch", "loc" => %w[body reference],
+                      "msg" => "String should match pattern '#{pattern}'", "input" => "",
+                      "ctx" => { "pattern" => pattern } }]) { dn.collections.enroll(COL, image: URL_IMAGE, reference: "") }
+    assert_entries([{ "type" => "missing", "loc" => %w[body reference], "msg" => "Field required", "input" => nil }]) do
+      dn.collections.enroll(COL, image: URL_IMAGE, reference: nil)
+    end
     assert_entries([{ "type" => "string_too_long", "loc" => %w[body reference], "msg" => "String should have at most 64 characters",
                       "input" => "r" * 65, "ctx" => { "max_length" => 64 } }]) do
       dn.collections.enroll(COL, image: URL_IMAGE, reference: "r" * 65)
@@ -165,11 +213,23 @@ class CollectionsTest < Minitest::Test
                       "input" => "l" * 129, "ctx" => { "max_length" => 128 } }]) do
       dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042", label: "l" * 129)
     end
-    # The image is checked as a decision's image.
+    # A URL's rules are checked before sending, as for a decision's image.
     assert_raises(DecisionNode::BadRequestError) do
       dn.collections.enroll(COL, image: DecisionNode::Image.new("x", url: "http://files.example.com/x.jpg"), reference: "r")
     end
     assert_empty http.calls
+  end
+
+  def test_any_other_fault_of_the_picture_is_left_to_the_server
+    gif = DecisionNode::Image.new("badge", data: "GIF89a\x01\x00\x01\x00".b)
+    unreadable = FakeHTTP.json(422, { "detail" => [{ "type" => "image_unreadable", "loc" => %w[body image],
+                                                     "msg" => "The image could not be read: not a JPEG, PNG or WebP image.",
+                                                     "input" => "badge" }] })
+    http = FakeHTTP.new(unreadable)
+    e = assert_raises(DecisionNode::ValidationError) { client(http).collections.enroll(COL, image: gif, reference: "emp-1042") }
+    assert_equal [422, "image_unreadable"], [e.status, e.entries.first["type"]]
+    assert_equal 1, http.calls.size
+    assert_equal "badge", http.calls.first.json.dig("image", "id")
   end
 
   def test_list_items_checks_offset_and_limit
