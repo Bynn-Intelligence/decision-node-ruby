@@ -1,0 +1,210 @@
+# Builds the gem exactly as it is published, on every push to main and on every
+# v* tag, and publishes it to RubyGems.org from a v* tag after a person approves
+# the release.
+#
+# Names this workflow relies on, all created by the repository's owner:
+#
+# - Environment "release" (Settings, Environments): required reviewers, the
+#   people who approve a release; deployment branches and tags limited to the
+#   tag rule "v*". The publish job runs in it and waits for an approval.
+# - Secrets and variables: none. The gem is pushed with RubyGems.org trusted
+#   publishing: the publish job exchanges its GitHub OIDC token for a
+#   short-lived RubyGems API key, so no API key is stored anywhere.
+# - RubyGems.org trusted publisher, created before the first release as a
+#   pending trusted publisher under the owner's RubyGems.org profile (it
+#   becomes the gem's trusted publisher on the first push, and the owner who
+#   created it becomes the gem's owner):
+#     gem name                 bynn-decisionnode
+#     repository owner         Bynn-Intelligence
+#     repository name          decision-node-ruby
+#     workflow filename        release.yml
+#     environment              release
+# - Multi-factor authentication: the gemspec sets rubygems_mfa_required, so
+#   every owner of the gem needs MFA enabled on their RubyGems.org account
+#   for pushes they make by hand. A push with a trusted-publisher key is not a
+#   user's key and needs no one-time password.
+#
+# A release: set the version in lib/decisionnode/version.rb and the top entry
+# of CHANGELOG.md on main, then push the tag v<version> on a commit of main.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: "3.4"
+      - name: Build the gem
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pkg
+          gem build bynn-decisionnode.gemspec --output pkg/release.gem
+          name="$(ruby -rrubygems/package -e 'print Gem::Package.new("pkg/release.gem").spec.file_name')"
+          mv pkg/release.gem "pkg/$name"
+          echo "GEM_FILE=pkg/$name" >> "$GITHUB_ENV"
+          echo "Built pkg/$name"
+      - name: Check the metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby - "$GEM_FILE" <<'RUBY'
+            require "rubygems/package"
+            spec = Gem::Package.new(ARGV[0]).spec
+            errors = []
+            errors << "name is #{spec.name}, not bynn-decisionnode" unless spec.name == "bynn-decisionnode"
+
+            version = spec.version.to_s
+            if ENV["GITHUB_REF"].to_s.start_with?("refs/tags/")
+              tag = ENV.fetch("GITHUB_REF_NAME")
+              errors << "version #{version} does not match the tag #{tag}" unless tag == "v#{version}"
+            else
+              top = File.read("CHANGELOG.md")[/^## \[([^\]]+)\]/, 1]
+              errors << "version #{version} does not match the CHANGELOG's top entry #{top.inspect}" unless top == version
+            end
+
+            errors << "license is #{spec.licenses.inspect}, not MIT" unless spec.licenses == ["MIT"]
+            errors << "homepage is #{spec.homepage.inspect}" unless spec.homepage == "https://decisionnode.com"
+            source = spec.metadata["source_code_uri"]
+            unless source == "https://github.com/Bynn-Intelligence/decision-node-ruby"
+              errors << "source_code_uri is #{source.inspect}"
+            end
+            errors << "the gem has no README.md" unless spec.files.include?("README.md")
+
+            puts "#{spec.name} #{version}"
+            puts "license #{spec.licenses.join(', ')}, homepage #{spec.homepage}, source #{source}"
+            unless errors.empty?
+              errors.each { |e| puts "::error::#{e}" }
+              exit 1
+            end
+          RUBY
+      - name: Check the contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p unpacked
+          tar -xf "$GEM_FILE" -C unpacked data.tar.gz metadata.gz
+          mkdir -p unpacked/data
+          tar -xzf unpacked/data.tar.gz -C unpacked/data
+          gunzip -c unpacked/metadata.gz > unpacked/metadata.yml
+
+          echo "Files in $GEM_FILE:"
+          (cd unpacked/data && find . -type f | sed 's|^\./||' | sort) | tee unpacked/files.txt
+
+          # Only the library, the README, the changelog and the licence.
+          outside="$(grep -Ev '^(lib/.+\.rb|README\.md|CHANGELOG\.md|LICENSE)$' unpacked/files.txt || true)"
+          if [ -n "$outside" ]; then
+            echo "::error::files outside the allowlist:"
+            echo "$outside"
+            exit 1
+          fi
+
+          # Nothing internal or generated in any file of the gem, its metadata included.
+          # The list is kept encoded so this public file does not spell it out
+          # (decode it with base64 -d to read it).
+          pattern="$(printf '%s' '' | base64 -d)"
+          # Only the files are listed, so a log never repeats what was found.
+          if grep -rliE "$pattern" unpacked/data unpacked/metadata.yml; then
+            echo "::error::the files above name something the gem must not"
+            exit 1
+          fi
+
+          # The README and the gem's summary and description name only boosters
+          # the API serves.
+          if grep -nE 'face_detection|wanted_person' unpacked/data/README.md; then
+            echo "::error::README.md names a booster the API does not serve yet"
+            exit 1
+          fi
+          ruby -rrubygems/package -e 's = Gem::Package.new(ARGV[0]).spec; t = "#{s.summary} #{s.description}"; if t.match?(/face_detection|wanted_person/); puts "::error::the summary or description names a booster the API does not serve yet"; exit 1; end' "$GEM_FILE"
+          echo "The contents pass."
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gem
+          path: ${{ env.GEM_FILE }}
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: dry-run
+    runs-on: ubuntu-latest
+    # Required reviewers approve every run, limited to v* tags.
+    environment: release
+    permissions:
+      # The GitHub release.
+      contents: write
+      # The OIDC token that trusted publishing exchanges for a RubyGems API key.
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Only a commit already on main is released: a tag pushed on any other
+      # branch, or on a commit that never went through review, stops here.
+      - name: Check that the tag is on main
+        shell: bash
+        run: |
+          tagged="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "::error::origin/main was not fetched; cannot check the tag"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tagged" refs/remotes/origin/main; then
+            echo "::error::${GITHUB_REF_NAME} points at $tagged, which is not on main"
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} ($tagged) is on main"
+      # The dry-run's own file: the gem is never built again here.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gem
+          path: pkg
+      - name: Find the gem
+        shell: bash
+        run: |
+          set -euo pipefail
+          gem_file="$(ls pkg/*.gem)"
+          if [ "$(printf '%s\n' "$gem_file" | wc -l)" -ne 1 ]; then
+            echo "::error::expected one gem in the artifact, found: $gem_file"
+            exit 1
+          fi
+          echo "GEM_FILE=$gem_file" >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: "3.4"
+      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+      - name: Push the gem
+        run: gem push "$GEM_FILE"
+      - name: Create the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # The version's own section of the changelog, without its heading.
+          awk -v v="$version" '
+            /^## / { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" "$GEM_FILE" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md
