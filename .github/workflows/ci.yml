@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 env:
-  # The commit of the conformance suite this gem is tested against (suite 1.12).
+  # The commit of the conformance suite this gem is tested against (suite 1.13, tag v1.13).
   # Change it here, and only here, to move to a newer suite.
-  CONFORMANCE_REF: 5f996eabc796c15d97655169dff7c8082e8a5d48
+  CONFORMANCE_REF: ede3f8b03d85111ca61085df5aa7a306ab5ec943
 
 jobs:
   test:
@@ -47,7 +47,6 @@ jobs:
         with:
           repository: Bynn-Intelligence/decision-node-conformance
           ref: ${{ env.CONFORMANCE_REF }}
-          token: ${{ secrets.DECISIONNODE_CONFORMANCE_TOKEN }}
           persist-credentials: false
           path: conformance
 
