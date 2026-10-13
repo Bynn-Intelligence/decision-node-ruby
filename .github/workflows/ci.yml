@@ -66,3 +66,15 @@ jobs:
         env:
           DECISIONNODE_CONFORMANCE_DIR: ${{ github.workspace }}/conformance
         run: bundle exec rake conformance
+
+  # The check that runs before every release, tested with invented words; it
+  # needs no secret.
+  name-check:
+    name: Release name check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Test the release name check
+        run: python3 .github/scripts/test_check_names.py

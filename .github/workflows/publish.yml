@@ -61,7 +61,9 @@ jobs:
 
       - run: bundle exec rake test
       - run: gem build bynn-decisionnode.gemspec
-      - run: python3 .github/scripts/check_names.py "bynn-decisionnode-${{ steps.bump.outputs.version }}.gem"
+      - run: python3 .github/scripts/check_names.py --commits "bynn-decisionnode-${{ steps.bump.outputs.version }}.gem"
+        env:
+          DN_NAME_CHECK_WORDS: ${{ secrets.DN_NAME_CHECK_WORDS }}
 
       # Sigstore build provenance over the exact gem artifact. rubygems.org
       # does not display it yet, but it is logged to the transparency log and
