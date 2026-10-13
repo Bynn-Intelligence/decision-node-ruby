@@ -183,7 +183,20 @@ class CollectionsTest < Minitest::Test
     assert_entries([{ "type" => "string_too_short", "loc" => %w[body name], "msg" => "String should have at least 1 character",
                       "input" => "", "ctx" => { "min_length" => 1 } }]) { dn.collections.create(name: "") }
     assert_entries([{ "type" => "string_too_long", "loc" => %w[body name], "msg" => "String should have at most 80 characters",
-                      "input" => "n" * 81, "ctx" => { "max_length" => 80 } }]) { dn.collections.create(name: "n" * 81) }
+                      "input" => "#{"n" * 64}...", "ctx" => { "max_length" => 80 } }]) { dn.collections.create(name: "n" * 81) }
+    # A string input is echoed cut to 64 characters, counted as characters; an object never.
+    assert_entries([{ "type" => "string_too_long", "loc" => %w[body name], "msg" => "String should have at most 80 characters",
+                      "input" => "#{"\u{20000}" * 64}...", "ctx" => { "max_length" => 80 } }]) do
+      dn.collections.create(name: "\u{20000}" * 81)
+    end
+    assert_entries([{ "type" => "string_type", "loc" => %w[body name], "msg" => "Input should be a valid string",
+                      "input" => nil }]) { dn.collections.create(name: { "a" => 1 }) }
+    assert_entries([{ "type" => "string_type", "loc" => %w[body name], "msg" => "Input should be a valid string",
+                      "input" => 7 }]) { dn.collections.create(name: 7) }
+    assert_entries([{ "type" => "literal_error", "loc" => %w[body type], "msg" => "Input should be 'face'",
+                      "input" => "#{"t" * 64}...", "ctx" => { "expected" => "'face'" } }]) do
+      dn.collections.create(name: "Staff", type: "t" * 70)
+    end
     assert_equal collection, dn.collections.create(name: "n" * 80)
     assert_equal 1, http.calls.size # only the 80-character name was sent
   end
@@ -198,19 +211,29 @@ class CollectionsTest < Minitest::Test
     assert_entries([{ "type" => "string_pattern_mismatch", "loc" => %w[body reference],
                       "msg" => "String should match pattern '#{pattern}'", "input" => "a\nb",
                       "ctx" => { "pattern" => pattern } }]) { dn.collections.enroll(COL, image: URL_IMAGE, reference: "a\nb") }
-    # An empty reference fails the pattern, as the API answers it; a missing one is "missing".
-    assert_entries([{ "type" => "string_pattern_mismatch", "loc" => %w[body reference],
-                      "msg" => "String should match pattern '#{pattern}'", "input" => "",
-                      "ctx" => { "pattern" => pattern } }]) { dn.collections.enroll(COL, image: URL_IMAGE, reference: "") }
+    # The length comes before the pattern: an empty reference is too short; a missing one is "missing".
+    assert_entries([{ "type" => "string_too_short", "loc" => %w[body reference],
+                      "msg" => "String should have at least 1 character", "input" => "",
+                      "ctx" => { "min_length" => 1 } }]) { dn.collections.enroll(COL, image: URL_IMAGE, reference: "") }
+    # A label, when given, may not be empty.
+    assert_entries([{ "type" => "string_too_short", "loc" => %w[body label],
+                      "msg" => "String should have at least 1 character", "input" => "",
+                      "ctx" => { "min_length" => 1 } }]) do
+      dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042", label: "")
+    end
+    # A missing image's input is nil.
+    assert_entries([{ "type" => "missing", "loc" => %w[body image], "msg" => "Field required", "input" => nil }]) do
+      dn.collections.enroll(COL, image: nil, reference: "emp-1042")
+    end
     assert_entries([{ "type" => "missing", "loc" => %w[body reference], "msg" => "Field required", "input" => nil }]) do
       dn.collections.enroll(COL, image: URL_IMAGE, reference: nil)
     end
     assert_entries([{ "type" => "string_too_long", "loc" => %w[body reference], "msg" => "String should have at most 64 characters",
-                      "input" => "r" * 65, "ctx" => { "max_length" => 64 } }]) do
+                      "input" => "#{"r" * 64}...", "ctx" => { "max_length" => 64 } }]) do
       dn.collections.enroll(COL, image: URL_IMAGE, reference: "r" * 65)
     end
     assert_entries([{ "type" => "string_too_long", "loc" => %w[body label], "msg" => "String should have at most 128 characters",
-                      "input" => "l" * 129, "ctx" => { "max_length" => 128 } }]) do
+                      "input" => "#{"l" * 64}...", "ctx" => { "max_length" => 128 } }]) do
       dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042", label: "l" * 129)
     end
     # A URL's rules are checked before sending, as for a decision's image.

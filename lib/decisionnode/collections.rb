@@ -24,7 +24,8 @@ class DecisionNode
     # fails the pattern, as the API answers it.
     REFERENCE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$"
     REFERENCE_RULE = /\A[A-Za-z0-9_.:-]{1,64}\z/
-    private_constant :NAME_MAX, :REFERENCE_MAX, :LABEL_MAX, :REFERENCE_PATTERN, :REFERENCE_RULE
+    ECHO_CHARS = 64
+    private_constant :NAME_MAX, :REFERENCE_MAX, :LABEL_MAX, :REFERENCE_PATTERN, :REFERENCE_RULE, :ECHO_CHARS
 
     def initialize(client)
       @client = client
@@ -40,7 +41,7 @@ class DecisionNode
       type = type.to_s if type.is_a?(Symbol)
       entries = []
       unless type == "face"
-        entries << Checks.entry("literal_error", %w[body type], "Input should be 'face'", type, { "expected" => "'face'" })
+        entries << Checks.entry("literal_error", %w[body type], "Input should be 'face'", echoed(type), { "expected" => "'face'" })
       end
       entries.concat(string_entries(%w[body name], name, 1, NAME_MAX))
       raise Checks.invalid(entries) unless entries.empty?
@@ -73,9 +74,9 @@ class DecisionNode
     # `label`, when given, at most 128 characters.
     def enroll(collection_id, image:, reference:, label: nil)
       entries = []
-      entries << Checks.entry("missing", %w[body image], "Field required", { "reference" => reference }) if image.nil?
-      entries.concat(string_entries(%w[body reference], reference, 0, REFERENCE_MAX, REFERENCE_RULE, required: true))
-      entries.concat(string_entries(%w[body label], label, 0, LABEL_MAX)) unless label.nil?
+      entries << Checks.entry("missing", %w[body image], "Field required", nil) if image.nil?
+      entries.concat(string_entries(%w[body reference], reference, 1, REFERENCE_MAX, REFERENCE_RULE))
+      entries.concat(string_entries(%w[body label], label, 1, LABEL_MAX)) unless label.nil?
       raise Checks.invalid(entries) unless entries.empty?
 
       images = @client.__send__(:prepared_images, [image])
@@ -129,11 +130,23 @@ class DecisionNode
       URI.encode_uri_component(id.to_s)
     end
 
+    # How a collections 422 entry echoes an input, as the API does: a String
+    # cut to its first 64 characters, with "..." only when it was longer; an
+    # object or an array never (nil); anything else as it is.
+    def echoed(value)
+      case value
+      when String then value.length > ECHO_CHARS ? "#{value[0, ECHO_CHARS]}..." : value
+      when Hash, Array then nil
+      else value
+      end
+    end
+
     # A string field's 422 entry, as the API answers it: missing, not a
-    # String, too short, too long, or (with a pattern) not matching it.
+    # String, too short, too long, or (with a pattern) not matching it. The
+    # length is checked before the pattern, so an empty value is too short.
     def string_entries(loc, value, least, most, rule = nil, required: least.positive?)
       return required ? [Checks.entry("missing", loc, "Field required", nil)] : [] if value.nil?
-      return [Checks.entry("string_type", loc, "Input should be a valid string", value)] unless value.is_a?(String)
+      return [Checks.entry("string_type", loc, "Input should be a valid string", echoed(value))] unless value.is_a?(String)
 
       if value.length < least
         chars = least == 1 ? "character" : "characters"
@@ -141,7 +154,7 @@ class DecisionNode
                              { "min_length" => least })]
       end
       if value.length > most
-        return [Checks.entry("string_too_long", loc, "String should have at most #{most} characters", value,
+        return [Checks.entry("string_too_long", loc, "String should have at most #{most} characters", echoed(value),
                              { "max_length" => most })]
       end
       if rule && !value.match?(rule)
