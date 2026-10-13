@@ -64,6 +64,31 @@ class FaceReadingsTest < Minitest::Test
                  [public_figure.collection, public_figure.reference, public_figure.name, public_figure.label]
     assert_instance_of DecisionNode::FaceRecognitionReading, hall
     assert_empty hall.matches
+    assert_nil door.collection_name
+    assert_equal [nil, nil, nil, nil], [own.collection_name, own.metadata, public_figure.collection_name, public_figure.metadata]
+  end
+
+  def test_face_recognition_collection_name_and_metadata
+    metadata = { "team" => "front desk", "floor" => 2, "tags" => ["a", nil], "badge" => { "active" => true } }
+    results = evidence("face_recognition", [
+                         { "image" => "door", "faces" => 1, "collection_name" => "Staff",
+                           "matches" => [
+                             { "box" => box(5, 6, 50, 60), "score" => 0.87, "collection" => "col_1", "reference" => "emp-0042",
+                               "collection_name" => "Staff", "metadata" => metadata },
+                             { "box" => box(70, 6, 120, 60), "score" => 0.81, "collection" => "celebrities",
+                               "reference" => "pub-1", "collection_name" => "celebrities", "metadata" => {} },
+                             { "box" => box(1, 2, 3, 4), "score" => 0.5, "collection" => "col_1", "reference" => "r",
+                               "collection_name" => nil, "metadata" => nil }
+                           ] }
+                       ])
+    reading = results.first
+    assert_instance_of DecisionNode::FaceRecognitionReading, reading
+    assert_equal "Staff", reading.collection_name
+    own, public_figure, bare = reading.matches
+    assert_equal ["Staff", metadata], [own.collection_name, own.metadata]
+    # An empty Hash sent stays an empty Hash; nothing sent stays nil.
+    assert_equal ["celebrities", {}], [public_figure.collection_name, public_figure.metadata]
+    assert_equal [nil, nil], [bare.collection_name, bare.metadata]
   end
 
   def test_malformed_face_detection_is_generic
@@ -98,11 +123,21 @@ class FaceReadingsTest < Minitest::Test
       { "image" => "a", "faces" => 1, "matches" => [good.merge("label" => false)] },
       { "image" => "a", "faces" => 1, "matches" => [good.reject { |k, _| k == "score" }] },
       { "image" => "a", "faces" => 1, "matches" => [good.reject { |k, _| k == "box" }] },
-      { "image" => "a", "faces" => "1", "matches" => [] }
+      { "image" => "a", "faces" => "1", "matches" => [] },
+      { "image" => "a", "faces" => 1, "collection_name" => 7, "matches" => [good] },
+      { "image" => "a", "faces" => 1, "collection_name" => { "x" => 1 }, "matches" => [good] },
+      { "image" => "a", "faces" => 1, "matches" => [good.merge("collection_name" => 3)] },
+      { "image" => "a", "faces" => 1, "matches" => [good.merge("collection_name" => ["Staff"])] },
+      { "image" => "a", "faces" => 1, "matches" => [good.merge("metadata" => "x")] },
+      { "image" => "a", "faces" => 1, "matches" => [good.merge("metadata" => [1, 2])] },
+      { "image" => "a", "faces" => 1, "matches" => [good.merge("metadata" => 0)] }
     ]
     evidence("face_recognition", malformed).each { |r| assert_instance_of DecisionNode::UnknownReading, r }
-    # A name or label sent as null is absent, and the reading stays typed.
-    typed = evidence("face_recognition", [{ "image" => "a", "faces" => 1, "matches" => [good.merge("name" => nil, "label" => nil)] }])
+    # A name, label, collection name or metadata sent as null is absent, and
+    # the reading stays typed.
+    typed = evidence("face_recognition", [{ "image" => "a", "faces" => 1, "collection_name" => nil,
+                                            "matches" => [good.merge("name" => nil, "label" => nil,
+                                                                     "collection_name" => nil, "metadata" => nil)] }])
     assert_instance_of DecisionNode::FaceRecognitionReading, typed.first
   end
 end

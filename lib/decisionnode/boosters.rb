@@ -291,7 +291,10 @@ class DecisionNode
   # (a FaceBox), the match `score` from 0 to 1, the `collection` searched, the
   # matched item's `reference`, and its `name` (a public figure) or `label`
   # (an item of your own collection that has one), each nil when absent.
-  FaceMatch = Struct.new(:box, :score, :collection, :reference, :name, :label)
+  # `collection_name` is an own collection's display name (or its id), or a
+  # public collection's id; `metadata` is an own item's metadata, a Hash of
+  # JSON values as sent. Each is nil when absent, never an empty Hash.
+  FaceMatch = Struct.new(:box, :score, :collection, :reference, :name, :label, :collection_name, :metadata)
 
   # The faces of a face reading, checked alike for both boosters.
   module FaceReadings
@@ -332,23 +335,30 @@ class DecisionNode
   class FaceRecognitionReading < Reading
     # How many faces were searched.
     attr_reader :faces
+    # An own collection's display name, or nil when absent (a public
+    # collection, or an answer from before the field).
+    attr_reader :collection_name
     # The faces that matched, in the order sent: each a FaceMatch. Empty when
     # none did.
     attr_reader :matches
 
     def self.well_formed?(raw)
       FaceReadings.counted?(raw) &&
+        (raw["collection_name"].nil? || raw["collection_name"].is_a?(String)) &&
         FaceReadings.list?(raw, "matches") do |m|
           number?(m["score"]) && m["collection"].is_a?(String) && m["reference"].is_a?(String) &&
-            %w[name label].all? { |k| m[k].nil? || m[k].is_a?(String) }
+            %w[name label collection_name].all? { |k| m[k].nil? || m[k].is_a?(String) } &&
+            (m["metadata"].nil? || m["metadata"].is_a?(Hash))
         end
     end
 
     def initialize(raw)
       super
       @faces = raw["faces"]
+      @collection_name = raw["collection_name"]
       @matches = raw["matches"].map do |m|
-        FaceMatch.new(FaceBox.from(m["box"]), m["score"], m["collection"], m["reference"], m["name"], m["label"])
+        FaceMatch.new(FaceBox.from(m["box"]), m["score"], m["collection"], m["reference"], m["name"], m["label"],
+                      m["collection_name"], m["metadata"])
       end.freeze
     end
   end

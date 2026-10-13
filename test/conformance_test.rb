@@ -243,9 +243,10 @@ module Conformance
         "detections" => reading.detections.map { |d| { "box" => norm_box(d.box), "confidence" => d.confidence } } }
     when DecisionNode::FaceRecognitionReading
       { "kind" => "face_recognition", "image" => reading.image, "faces" => reading.faces,
+        "collection_name" => reading.collection_name,
         "matches" => reading.matches.map do |m|
           { "box" => norm_box(m.box), "score" => m.score, "collection" => m.collection, "reference" => m.reference,
-            "name" => m.name, "label" => m.label }
+            "name" => m.name, "label" => m.label, "collection_name" => m.collection_name, "metadata" => m.metadata }
         end }
     when DecisionNode::UnknownReading
       { "kind" => "unknown", "raw" => reading.raw }

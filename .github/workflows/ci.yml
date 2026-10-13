@@ -11,7 +11,7 @@ permissions:
 env:
   # The commit of the conformance suite this gem is tested against (suite 1.15, tag v1.15).
   # Change it here, and only here, to move to a newer suite.
-  CONFORMANCE_REF: 953f7222484c1ff4d1abbb1a5111c07cf2ce437a
+  CONFORMANCE_REF: 2d2c5a97c1d57e3be74c9edb4c5b9117511802a2
 
 jobs:
   test:
