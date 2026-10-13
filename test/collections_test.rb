@@ -289,4 +289,118 @@ class CollectionsTest < Minitest::Test
       assert_equal JSON.parse(response.body).dig("detail", "message"), e.message
     end
   end
+  # ---- suite 1.15: metadata, update_item, the reference filters, details
+
+  def test_enroll_sends_metadata_only_when_given
+    http = FakeHTTP.new(FakeHTTP.json(201, item), FakeHTTP.json(201, item))
+    dn = client(http)
+    dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042", metadata: { "desk" => 4, "remote" => false })
+    dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042")
+    assert_equal({ "desk" => 4, "remote" => false }, http.calls.first.json["metadata"])
+    refute http.calls.last.json.key?("metadata")
+  end
+
+  def test_update_item_sends_only_the_fields_given_with_a_key
+    http = FakeHTTP.new(*Array.new(4) { FakeHTTP.json(200, item) })
+    dn = client(http)
+    assert_equal item, dn.collections.update_item(COL, ITEM, label: "Anna, reception")
+    dn.collections.update_item(COL, ITEM, label: nil)
+    dn.collections.update_item(COL, ITEM, metadata: {})
+    dn.collections.update_item(COL, ITEM, reference: "emp-1043", metadata: { "desk" => "4b" })
+    assert_equal ["PATCH", "/v1/collections/#{COL}/items/#{ITEM}"], [http.calls.first.method, path(http.calls.first)]
+    assert_equal [{ "label" => "Anna, reception" }, { "label" => nil }, { "metadata" => {} },
+                  { "reference" => "emp-1043", "metadata" => { "desk" => "4b" } }], http.calls.map(&:json)
+    keys(http).each { |k| assert_match UUID_V4, k }
+    assert_equal 4, keys(http).uniq.size
+  end
+
+  def test_update_item_retries_with_its_key_and_on_in_progress
+    busy = FakeHTTP.json(409, { "detail" => { "error_type" => "idempotency_in_progress", "message" => "running" } },
+                         { "retry-after" => "1" })
+    http = FakeHTTP.new(error(503, "x", "busy"), busy, FakeHTTP.json(200, item))
+    assert_equal item, client(http).collections.update_item(COL, ITEM, label: "Anna")
+    assert_equal 3, http.calls.size
+    assert_equal 1, keys(http).uniq.size
+  end
+
+  def test_update_item_with_nothing_and_its_field_checks
+    dn = client(FakeHTTP.new)
+    e = assert_raises(DecisionNode::ValidationError) { dn.collections.update_item(COL, ITEM) }
+    assert_equal [{ "type" => "missing", "loc" => ["body"], "msg" => "Send reference, label, metadata or any of them",
+                    "input" => nil }], e.entries
+    e = assert_raises(DecisionNode::ValidationError) { dn.collections.update_item(COL, ITEM, reference: "emp 1042") }
+    assert_equal "string_pattern_mismatch", e.entries.first["type"]
+    e = assert_raises(DecisionNode::ValidationError) { dn.collections.update_item(COL, ITEM, label: "") }
+    assert_equal "string_too_short", e.entries.first["type"]
+    assert_nil e.status
+  end
+
+  def test_metadata_checks
+    dn = client(FakeHTTP.new)
+    check = lambda do |metadata|
+      assert_raises(DecisionNode::ValidationError) do
+        dn.collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042", metadata: metadata)
+      end.entries
+    end
+    assert_equal [{ "type" => "value_error", "loc" => %w[body metadata], "msg" => "Metadata is an object of keys and values.",
+                    "input" => "desk 4" }], check.call("desk 4")
+    many = (1..21).to_h { |i| ["k#{i}", i] }
+    assert_equal [{ "type" => "value_error", "loc" => %w[body metadata], "msg" => "Metadata holds at most 20 keys.",
+                    "input" => nil }], check.call(many.merge("Bad Key" => 1))
+    long_key = "a#{'b' * 44}"
+    got = check.call({ "Desk" => 1, "ok" => "x" * 501, "list" => [1], long_key => 1, "tab\tkey" => 1, "fine" => true })
+    assert_equal [
+      ["value_error", %w[body metadata], 'A metadata key is 1 to 40 characters of a-z, 0-9 and _: "Desk".', nil],
+      ["value_error", %w[body metadata ok], "A metadata text is at most 500 characters.", "#{'x' * 64}..."],
+      ["value_error", %w[body metadata list], "A metadata value is a text, a number or true or false.", nil],
+      ["value_error", %w[body metadata], "A metadata key is 1 to 40 characters of a-z, 0-9 and _: \"#{long_key[0, 40]}...\".", nil],
+      ["value_error", %w[body metadata], 'A metadata key is 1 to 40 characters of a-z, 0-9 and _: "tab?key".', nil]
+    ], got.map { |e| e.values_at("type", "loc", "msg", "input") }
+    # Exactly 500 characters, numbers and booleans pass; the API judges the rest.
+    http = FakeHTTP.new(FakeHTTP.json(201, item))
+    client(http).collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042",
+                                         metadata: { "note" => "n" * 500, "n" => 1.5, "b" => true, "c" => "\u0001" })
+    assert_equal 1, http.calls.size
+  end
+
+  def test_list_items_reference_filters
+    http = FakeHTTP.new(FakeHTTP.json(200, { "items" => [] }), FakeHTTP.json(200, { "items" => [] }))
+    dn = client(http)
+    dn.collections.list_items(COL, reference: "emp:1042")
+    dn.collections.list_items(COL, limit: 10, reference_prefix: "emp-")
+    assert_equal ["/v1/collections/#{COL}/items?reference=emp%3A1042",
+                  "/v1/collections/#{COL}/items?limit=10&reference_prefix=emp-"], http.calls.map { |c| path(c) }
+    dn = client(FakeHTTP.new)
+    e = assert_raises(DecisionNode::BadRequestError) { dn.collections.list_items(COL, reference: "a", reference_prefix: "b") }
+    assert_equal ["api_usage_error", "Send query parameter reference or reference_prefix, not both."], [e.error_type, e.message]
+    e = assert_raises(DecisionNode::BadRequestError) { dn.collections.list_items(COL, reference_prefix: "caf\u00e9 x") }
+    assert_equal "Query parameter reference_prefix must be 1 to 64 characters of A-Z, a-z, 0-9, _, ., : and -, " \
+                 "got caf\\u{e9} x.", e.message
+    e = assert_raises(DecisionNode::BadRequestError) { dn.collections.list_items(COL, reference: "r" * 70) }
+    assert e.message.end_with?("got #{'r' * 64}...."), e.message
+  end
+
+  def test_error_details_and_the_unpriced_enrollment
+    unpriced = FakeHTTP.json(529, { "detail" => { "error_type" => "overloaded_error", "message" => "Not priced.",
+                                                  "details" => { "reason" => "enrollment_unpriced" } } })
+    http = FakeHTTP.new(unpriced, FakeHTTP.json(201, item))
+    e = assert_raises(DecisionNode::OverloadedError) do
+      client(http).collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042")
+    end
+    assert_equal({ "reason" => "enrollment_unpriced" }, e.details)
+    assert_equal 1, http.calls.size
+    model = FakeHTTP.json(529, { "detail" => { "error_type" => "overloaded_error", "message" => "Busy.",
+                                               "details" => { "reason" => "face_model_unavailable" } } })
+    http = FakeHTTP.new(model, FakeHTTP.json(201, item))
+    assert_equal item, client(http).collections.enroll(COL, image: URL_IMAGE, reference: "emp-1042")
+    assert_equal 2, http.calls.size
+    e = assert_raises(DecisionNode::NotFoundError) do
+      client(FakeHTTP.new(error(404, "item_not_found", "Item not found.")), max_retries: 0).collections.get(COL)
+    end
+    assert_nil e.details
+    scope = FakeHTTP.json(403, { "detail" => { "error_type" => "key_scope_denied", "message" => "Not for this key." } })
+    e = assert_raises(DecisionNode::PermissionDeniedError) { client(FakeHTTP.new(scope)).collections.list }
+    assert_equal "key_scope_denied", e.error_type
+  end
+
 end

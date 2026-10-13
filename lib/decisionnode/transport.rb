@@ -218,6 +218,7 @@ class DecisionNode
         case method
         when "GET" then Net::HTTP::Get.new(path)
         when "POST" then Net::HTTP::Post.new(path)
+        when "PATCH" then Net::HTTP::Patch.new(path)
         when "PUT" then bare(Net::HTTP::Put.new(path))
         when "DELETE" then Net::HTTP::Delete.new(path)
         else raise ArgumentError, "unsupported method #{method}"

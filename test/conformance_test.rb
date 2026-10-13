@@ -294,7 +294,8 @@ module Conformance
       "safety" => get.(:safety)&.to_h,
       "entries" => get.(:entries),
       "retry_after" => get.(:retry_after),
-      "boosters" => get.(:boosters)&.transform_values { |b| { "status" => b.status, "latency_ms" => b.latency_ms } }
+      "boosters" => get.(:boosters)&.transform_values { |b| { "status" => b.status, "latency_ms" => b.latency_ms } },
+      "details" => get.(:details)
     }
   end
 

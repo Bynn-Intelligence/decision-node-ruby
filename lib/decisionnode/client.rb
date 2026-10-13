@@ -912,6 +912,10 @@ class DecisionNode
   private_constant :LineSplitter
 
   def retryable?(error, policy)
+    # An enrollment with no price set: a retry never cures it, and the API
+    # sends no Retry-After for it.
+    return false if error.status == 529 && error.details&.dig("reason") == "enrollment_unpriced"
+
     case policy
     when :mutation then [429, 529].include?(error.status)
     when :session_open then RETRY_STATUSES.include?(error.status) && !error.is_a?(SessionLimitError)

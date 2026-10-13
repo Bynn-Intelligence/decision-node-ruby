@@ -11,12 +11,14 @@ class DecisionNode
   # `boosters` is the `x-decisionnode-boosters` header of a request that
   # named boosters, as booster name to BoosterStatus in the request's order
   # (an empty Hash when there is none), so a caller can see which required
-  # booster failed. The report Ruby prints for an uncaught error adds the class, status and
+  # booster failed. `details` is the error body's `detail.details` when it is
+  # an object (an enrollment's 529 says why in its `reason`), else nil. The
+  # report Ruby prints for an uncaught error adds the class, status and
   # reason.
   class DecisionNodeError < StandardError
     include DecisionResult
 
-    attr_reader :status, :error_type, :request_id, :reason, :body, :headers, :boosters
+    attr_reader :status, :error_type, :request_id, :reason, :body, :headers, :boosters, :details
 
     def initialize(message = nil, status: nil, error_type: nil, request_id: nil, reason: nil, body: nil, headers: nil)
       @status = status
@@ -26,6 +28,9 @@ class DecisionNode
       @body = body
       @headers = headers || {}
       @boosters = BoosterStatus.parse(@headers["x-decisionnode-boosters"])
+      detail = body.is_a?(Hash) ? body["detail"] : nil
+      details = detail.is_a?(Hash) ? detail["details"] : nil
+      @details = details.is_a?(Hash) ? details : nil
       super(message.nil? ? "" : message.to_s)
     end
 

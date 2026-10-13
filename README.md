@@ -426,6 +426,32 @@ dn.check_request("batches.create", requests: requests)
 
 `Session#check_frame(frame:, image:, questions:, reset:, seq:)` does the same for a frame: it raises what `Session#send` would and writes nothing, uses no `seq`, and needs no connected socket.
 
+## Collections
+
+A collection holds faces your workspace enrolled, each under your own `reference`, so a `face_recognition` booster can match a picture against them. `dn.collections` returns each answer as the API sent it, a Hash with the API's field names.
+
+```ruby
+staff = dn.collections.create(name: "Staff")
+dn.collections.enroll(staff["id"], image: DecisionNode::Image.new("badge", path: "badge.jpg"),
+                      reference: "emp-1042", label: "Reception", metadata: { "desk" => 4, "remote" => false })
+
+page = dn.collections.list_items(staff["id"], reference_prefix: "emp-")
+item = page["items"].first
+dn.collections.update_item(staff["id"], item["id"], label: nil)            # clears the label
+dn.collections.update_item(staff["id"], item["id"], metadata: { "desk" => 7 }) # replaces the whole object
+```
+
+| Call | Sends |
+|---|---|
+| `create(name:, type: "face")` | `POST /v1/collections` |
+| `list`, `get(id)`, `delete(id)` | `GET /v1/collections`, `GET` and `DELETE /v1/collections/{id}` |
+| `enroll(id, image:, reference:, label: nil, metadata: nil)` | one face from one image, sent as a decision sends its images |
+| `update_item(id, item_id, reference:, label:, metadata:)` | `PATCH` with only the fields given: `label: nil` clears the label, `metadata` replaces the item's whole object (`{}` clears it) |
+| `list_items(id, offset:, limit:, reference:, reference_prefix:)` | one page; `reference` finds the items of one reference, `reference_prefix` those whose reference starts with it (not both) |
+| `delete_item(id, item_id)` | removes one item |
+
+A reference is 1 to 64 of `A-Z a-z 0-9 _ . : -`, a label 1 to 128 characters, and metadata a Hash of at most 20 keys of 1 to 40 of `a-z 0-9 _`, each value a text of at most 500 characters, a number, true or false. They are checked before sending, with the API's `ValidationError` or `BadRequestError`. `create`, `enroll` and `update_item` send an `Idempotency-Key`, a new UUID for each call and the same on every attempt of it, so the API acts and bills once however often the call is tried. They retry like every call, and also on a 409 `idempotency_in_progress` after its `Retry-After`; a 409 `idempotency_key_reused` is raised.
+
 ## Sessions
 
 A session holds one state and a fixed set of questions, and answers them again for every frame you send on its socket: telemetry, a camera feed, a conversation. Frames are answered as they arrive and the newest wins: a frame sent while another waits replaces it, and the reply says which frames it replaced in `dropped`.
@@ -541,7 +567,7 @@ The body then carries one more top-level field, `safety`, read from `decision.ra
 
 ## Errors
 
-Every error derives from `DecisionNode::DecisionNodeError`, which has `status`, `error_type`, `message`, `request_id`, `reason` and `boosters` (see "Boosters"; an empty Hash for a request without boosters). The error's `message` is the server's message, or the SDK's description when no response arrived; it is an empty string when the server sent none. `reason` is the server's explanation in words from the `x-decisionnode-error` header, for example `question 'q': a score takes up to 10 levels, got 11`. The report Ruby prints for an uncaught error adds the class, status and reason.
+Every error derives from `DecisionNode::DecisionNodeError`, which has `status`, `error_type`, `message`, `request_id`, `reason`, `boosters` (see "Boosters"; an empty Hash for a request without boosters) and `details` (the error body's `detail.details` when it is an object, for example `{"reason" => "enrollment_unpriced"}` on an enrollment's 529, else `nil`). The error's `message` is the server's message, or the SDK's description when no response arrived; it is an empty string when the server sent none. `reason` is the server's explanation in words from the `x-decisionnode-error` header, for example `question 'q': a score takes up to 10 levels, got 11`. The report Ruby prints for an uncaught error adds the class, status and reason.
 
 | Status | Error | Extra fields |
 |---|---|---|
@@ -580,7 +606,7 @@ end
 - The timeout is 10 seconds per attempt, and it covers the whole attempt: from sending the request to the last byte of the body, not each network step. A server that sends its answer slowly, a few bytes at a time, still ends the attempt at the deadline with a `TimeoutError`.
 - Only a 2xx status is a success. Redirects are never followed, so the API key is never sent to another URL or over plain HTTP; a 3xx raises `DecisionNodeError` with its status.
 - A request is retried twice after the first attempt on 408, 429, any 5xx, timeouts and connection errors. The wait is the server's `retry-after-ms`, else `Retry-After` in seconds or as an HTTP date, capped at 60 seconds; without either, an exponential backoff from 0.5 seconds with jitter, capped at 8 seconds. A decision changes nothing on the server, so a retry is always safe.
-- 400, 401, 402, 403, 404, 413 and 422 are never retried, and neither is a session limit. Batch create, add and finalize follow their own rule (see "Batches"). An image `PUT` to storage is retried on 5xx and connection errors in the same way.
+- 400, 401, 402, 403, 404, 413 and 422 are never retried, and neither is a session limit, nor a 529 whose `details` reason is `enrollment_unpriced` (an enrollment with no price, which a retry never cures). Batch create, add and finalize follow their own rule (see "Batches"). An image `PUT` to storage is retried on 5xx and connection errors in the same way.
 
 ## Configuration
 
@@ -637,7 +663,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.11) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.15) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 
