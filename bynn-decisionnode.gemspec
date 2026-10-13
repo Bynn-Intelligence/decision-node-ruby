@@ -6,8 +6,8 @@ Gem::Specification.new do |spec|
   spec.name = "bynn-decisionnode"
   spec.version = DecisionNode::VERSION
   spec.authors = ["Bynn Intelligence, Inc."]
-  spec.summary = "Ruby client for the DecisionNode API."
-  spec.description = "A typed client for DecisionNode: ask truth, choice, score and number questions " \
+  spec.summary = "Ruby client for the DecisionNode decision engine API."
+  spec.description = "A typed client for DecisionNode, a decision engine: ask truth, choice, score and number questions " \
                      "about any state, its images and its videos, and get calibrated answers " \
                      "back, with image uploads, sessions, the Batch API, retries, typed errors and the safety check result."
   spec.homepage = "https://decisionnode.com"

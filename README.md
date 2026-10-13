@@ -1,5 +1,7 @@
 # DecisionNode Ruby SDK
 
+[DecisionNode](https://decisionnode.com) is a decision engine: send it text, JSON or images with a question, and it answers with calibrated probabilities.
+
 Ruby client for the [DecisionNode](https://decisionnode.com) API: ask yes-or-no, choice, score and number questions about any state and get calibrated answers back, one request at a time, over a live session, or as a batch.
 
 Ruby 3.2 or later. One runtime dependency, `websocket-driver`, used by sessions only and loaded on the first one.
