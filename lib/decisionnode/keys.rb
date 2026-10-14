@@ -20,6 +20,12 @@ class DecisionNode
     LABEL_VALUE_CHARS = 64
     DEVICE_ID_CHARS = 128
     IDEMPOTENCY_KEY_CHARS = 255
+    KEY_NAME_CHARS = 48
+    KEY_MAX_LABELS = 16
+    SPEND_CAP_MAX_USD = 1_000
+    MAX_REVOKE_DEVICES = 1_000
+    ECHO_CHARS = 64
+    DEVICE_ID_RULE = "device_id is 1 to 128 printable ASCII characters, not starting with a space."
 
     module_function
 
@@ -46,13 +52,15 @@ class DecisionNode
       end
     end
 
+    def device_ok?(device_id)
+      device_id.is_a?(String) && device_id.length.between?(1, DEVICE_ID_CHARS) &&
+        device_id.each_char.all? { |c| c.ord.between?(0x20, 0x7E) } && !device_id.start_with?(" ")
+    end
+
     def device(device_id)
       return [] if device_id.nil?
-      unless device_id.is_a?(String) && device_id.length.between?(1, DEVICE_ID_CHARS) &&
-             device_id.each_char.all? { |c| c.ord.between?(0x20, 0x7E) } && !device_id.start_with?(" ")
-        Checks.usage("device_id is 1 to 128 printable ASCII characters, not starting with a space.")
-      end
 
+      Checks.usage(DEVICE_ID_RULE) unless device_ok?(device_id)
       [["device_id", device_id]]
     end
 
@@ -105,6 +113,90 @@ class DecisionNode
       return if key.is_a?(String) && key.length.between?(1, IDEMPOTENCY_KEY_CHARS) && key.each_char.all? { |c| c.ord.between?(0x20, 0x7E) }
 
       Checks.usage("Idempotency-Key must be sent once, as 1 to 255 printable ASCII characters.")
+    end
+
+    # How a key's 422 entry echoes an input, as the API does: a String cut to
+    # its first 64 characters, with "..." only when it was longer; a Hash or
+    # an Array never (nil); anything else as it is.
+    def echoed(value)
+      case value
+      when String then value.length > ECHO_CHARS ? "#{value[0, ECHO_CHARS]}..." : value
+      when Hash, Array then nil
+      else value
+      end
+    end
+
+    def key_entry(loc, msg, value)
+      Checks.entry("value_error", ["body"] + loc, msg, echoed(value))
+    end
+
+    # A key's name, trimmed, 1 to 48 characters; its characters are the
+    # server's to judge.
+    def name_entries(name)
+      trimmed = name.is_a?(String) ? name.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "") : ""
+      return [key_entry(["name"], "Give the key a name.", name)] if trimmed.empty?
+      return [key_entry(["name"], "Key names are at most 48 characters.", name)] if trimmed.length > KEY_NAME_CHARS
+
+      []
+    end
+
+    def labels_entries(labels)
+      return [key_entry(["labels"], "labels is an object of names to values.", labels)] unless labels.is_a?(Hash)
+      return [key_entry(["labels"], "A key has at most 16 labels.", labels)] if labels.size > KEY_MAX_LABELS
+
+      labels.each do |name, value|
+        name = name.to_s if name.is_a?(Symbol)
+        unless name.is_a?(String) && name.match?(LABEL_NAME_RULE)
+          return [key_entry(["labels"], "A label's name is 1 to 32 of a-z, 0-9, _ . and -.", labels)]
+        end
+        unless value.is_a?(String) && value.length.between?(1, LABEL_VALUE_CHARS) && !value.match?(/\p{Cc}/)
+          return [key_entry(["labels", name], "A label's value is 1 to 64 characters of text.", labels)]
+        end
+      end
+      []
+    end
+
+    # `daily_spend_cap`: `{"usd"}` from 0.01 to 1,000 in whole cents.
+    def cap_entries(cap)
+      usd = cap.is_a?(Hash) ? (cap.key?("usd") ? cap["usd"] : cap[:usd]) : nil
+      ok = usd.is_a?(Numeric) && usd.to_f.finite?
+      cents = ok ? (usd * 100).round : 0
+      return [] if ok && ((usd * 100) - cents).abs < 1e-6 && cents >= 1 && usd <= SPEND_CAP_MAX_USD
+
+      [key_entry(["daily_spend_cap"], "daily_spend_cap.usd is from 0.01 to 1000, in cents, or null.", cap)]
+    end
+
+    # A key's create (`clears` false) or update body, the fields given only,
+    # checked in the body's order: the first fault is the API's 422 entry. A
+    # limit's ceiling, the expiry's window and a name's characters are the
+    # server's.
+    def key_fields!(body, clears:)
+      entries = body.key?("name") ? name_entries(body["name"]) : []
+      if entries.empty?
+        entries << key_entry(["device_id"], DEVICE_ID_RULE, body["device_id"]) if body.key?("device_id") && !device_ok?(body["device_id"])
+        entries.concat(labels_entries(body["labels"])) if body.key?("labels") && !(clears && body["labels"].nil?)
+        if body.key?("limits") && !(clears && body["limits"].nil?) && !body["limits"].is_a?(Hash)
+          entries << key_entry(["limits"], "limits is an object, or null.", body["limits"])
+        end
+        entries.concat(cap_entries(body["daily_spend_cap"])) if body.key?("daily_spend_cap") && !(clears && body["daily_spend_cap"].nil?)
+      end
+      raise Checks.invalid(entries.first(1)) unless entries.empty?
+    end
+
+    # A bulk revoke's labels (at least one) and `device_ids` (at most 1,000).
+    def revoke_by_labels!(labels, device_ids)
+      entries = labels_entries(labels)
+      if entries.empty? && labels.empty?
+        entries = [key_entry(["labels"], "A bulk revoke names at least one label: every key it revokes has them all.", labels)]
+      end
+      if entries.empty? && !device_ids.nil?
+        if !device_ids.is_a?(Array) || device_ids.size > MAX_REVOKE_DEVICES
+          entries = [key_entry(["device_ids"], "device_ids is a list of at most 1,000 device ids.", device_ids)]
+        elsif (bad = device_ids.find { |d| !device_ok?(d) })
+          entries = [key_entry(["device_id"], DEVICE_ID_RULE, bad)]
+        end
+      end
+      raise Checks.invalid(entries) unless entries.empty?
     end
 
     def path(path, query)
@@ -209,15 +301,18 @@ class DecisionNode
     # Makes a Decisions-only key (`POST /v1/keys`): `{key, secret}`. The
     # secret is shown in this answer only (and again to a retry with the same
     # `idempotency_key:` within 24 hours); hand it to the device and never
-    # log it. Each field is sent only when given.
+    # log it. Each field is sent only when given. The name, `device_id`,
+    # labels, the shape of `limits` and the spend cap are checked first, each
+    # fault the API's 422 ValidationError, then the `idempotency_key`.
     def create(name, device_id: nil, labels: nil, limits: nil, daily_spend_cap: nil, expires_at: nil,
                may_search_collections: nil, idempotency_key: nil)
-      KeyFilters.idempotency_key!(idempotency_key) unless idempotency_key.nil?
       body = { "name" => name }
       { "device_id" => device_id, "labels" => labels, "limits" => limits, "daily_spend_cap" => daily_spend_cap,
         "expires_at" => expires_at, "may_search_collections" => may_search_collections }.each do |field, value|
         body[field] = value unless value.nil?
       end
+      KeyFilters.key_fields!(body, clears: false)
+      KeyFilters.idempotency_key!(idempotency_key) unless idempotency_key.nil?
       parsed, = @client.__send__(:request, "POST", "/v1/keys", body, policy: :idempotent,
                                                                  extra_headers: { "Idempotency-Key" => idempotency_key || SecureRandom.uuid })
       parsed
@@ -254,6 +349,7 @@ class DecisionNode
       body = { "name" => name, "labels" => labels, "limits" => limits, "daily_spend_cap" => daily_spend_cap,
                "expires_at" => expires_at, "may_search_collections" => may_search_collections }
              .reject { |_, value| value.equal?(UNSET) }
+      KeyFilters.key_fields!(body, clears: true)
       Checks.usage("Nothing to change.") if body.empty?
 
       call("PATCH", "/v1/keys/#{KeyFilters.segment(key_id)}", body)
@@ -271,8 +367,9 @@ class DecisionNode
     # is true. With `dry_run: true` it revokes nothing and answers
     # `{would_revoke, more}`.
     def revoke_by_labels(labels, device_ids: nil, dry_run: nil)
+      KeyFilters.revoke_by_labels!(labels, device_ids)
       body = { "labels" => labels }
-      body["device_ids"] = Array(device_ids) unless device_ids.nil?
+      body["device_ids"] = device_ids unless device_ids.nil?
       body["dry_run"] = dry_run unless dry_run.nil?
       call("POST", "/v1/keys/revoke", body)
     end

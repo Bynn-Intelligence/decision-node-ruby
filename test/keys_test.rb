@@ -198,6 +198,67 @@ class KeysTest < Minitest::Test
     assert_equal key_object, got
   end
 
+  # The one 422 entry a local check raises, with nothing sent.
+  def local_entry(&block)
+    http = FakeHTTP.new(FakeHTTP.json(201, created))
+    e = assert_raises(DecisionNode::ValidationError) { block.call(client(http).keys) }
+    assert_empty http.calls
+    assert_nil e.status
+    assert_equal 1, e.entries.size
+    e.entries.first
+  end
+
+  def test_create_checks
+    device_rule = "device_id is 1 to 128 printable ASCII characters, not starting with a space."
+    cap_rule = "daily_spend_cap.usd is from 0.01 to 1000, in cents, or null."
+    [
+      [["   "], %w[body name], "Give the key a name.", "   "],
+      [["x" * 49], %w[body name], "Key names are at most 48 characters.", "x" * 49],
+      [["k", { device_id: " kiosk" }], %w[body device_id], device_rule, " kiosk"],
+      [["k", { labels: ["a"] }], %w[body labels], "labels is an object of names to values.", nil],
+      [["k", { labels: (0..16).to_h { |i| [i.to_s, "v"] } }], %w[body labels], "A key has at most 16 labels.", nil],
+      [["k", { labels: { "Store" => "1" } }], %w[body labels], "A label's name is 1 to 32 of a-z, 0-9, _ . and -.", nil],
+      [["k", { labels: { "store" => "" } }], %w[body labels store], "A label's value is 1 to 64 characters of text.", nil],
+      [["k", { limits: 5 }], %w[body limits], "limits is an object, or null.", 5],
+      [["k", { daily_spend_cap: { "usd" => 0.005 } }], %w[body daily_spend_cap], cap_rule, nil],
+      [["k", { daily_spend_cap: { "usd" => 1000.01 } }], %w[body daily_spend_cap], cap_rule, nil]
+    ].each do |(name, kwargs), loc, msg, input|
+      entry = local_entry { |keys| keys.create(name, **(kwargs || {})) }
+      assert_equal ["value_error", loc, msg, input], entry.values_at("type", "loc", "msg", "input"), msg
+    end
+  end
+
+  def test_create_checks_the_body_before_the_idempotency_key
+    entry = local_entry { |keys| keys.create("", idempotency_key: "") }
+    assert_equal "Give the key a name.", entry["msg"]
+  end
+
+  def test_a_whole_cent_cap_passes
+    http = FakeHTTP.new(FakeHTTP.json(201, created))
+    client(http).keys.create("k", daily_spend_cap: { "usd" => 1000 })
+    assert_equal({ "usd" => 1000 }, http.calls.first.json["daily_spend_cap"])
+  end
+
+  def test_update_checks_what_it_sends_and_nil_clears_unchecked
+    entry = local_entry { |keys| keys.update(KEY_ID, name: "x" * 49) }
+    assert_equal "Key names are at most 48 characters.", entry["msg"]
+    http = FakeHTTP.new(FakeHTTP.json(200, key_object))
+    client(http).keys.update(KEY_ID, labels: nil, limits: nil, daily_spend_cap: nil)
+    assert_equal({ "labels" => nil, "limits" => nil, "daily_spend_cap" => nil }, http.calls.first.json)
+  end
+
+  def test_revoke_by_labels_checks
+    [
+      [[{}], %w[body labels], "A bulk revoke names at least one label: every key it revokes has them all."],
+      [[{ "store" => "1" }, ["d"] * 1001], %w[body device_ids], "device_ids is a list of at most 1,000 device ids."],
+      [[{ "store" => "1" }, ["ok", " bad"]], %w[body device_id],
+       "device_id is 1 to 128 printable ASCII characters, not starting with a space."]
+    ].each do |(labels, devices), loc, msg|
+      entry = local_entry { |keys| devices ? keys.revoke_by_labels(labels, device_ids: devices) : keys.revoke_by_labels(labels) }
+      assert_equal [loc, msg], entry.values_at("loc", "msg"), msg
+    end
+  end
+
   def test_update_with_nothing_to_change_is_refused_before_sending
     http = FakeHTTP.new(FakeHTTP.json(200, key_object))
     assert_usage_error("Nothing to change.") { client(http).keys.update(KEY_ID) }

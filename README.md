@@ -488,7 +488,9 @@ loop { break unless admin.keys.revoke_by_labels({ "store" => "118" })["more"] }
 | `revoke(key_id)` | `DELETE /v1/keys/{id}`: revoked at once |
 | `revoke_by_labels(labels, device_ids:, dry_run:)` | every active key with all of `labels`, at most 10,000 a call: `{revoked, more}`; call again while `more` is true. `dry_run: true` counts them instead: `{would_revoke, more}` |
 
-`create` sends an `Idempotency-Key`: yours when you pass one (one per enrollment), else a new UUID for each call, the same on every attempt of it, so a retried call makes one key. A retry with the same key and body within 24 hours returns the same key and secret. A label filter, a `device_id`, a `status`, a `limit`, a malformed `idempotency_key` and an update with nothing to change are refused before sending with the API's `BadRequestError`. The whole flow is in [Keys on devices](https://decisionnode.com/docs/patterns/device-keys).
+`create` sends an `Idempotency-Key`: yours when you pass one (one per enrollment), else a new UUID for each call, the same on every attempt of it, so a retried call makes one key. A retry with the same key and body within 24 hours returns the same key and secret.
+
+What the API checks by fixed rules is checked before anything is sent, with its messages: a key's name (1 to 48 characters once trimmed), a `device_id` (1 to 128 printable ASCII characters, not starting with a space), labels (at most 16, each name 1 to 32 of `a-z`, `0-9`, `_`, `.` and `-`, each value 1 to 64 characters), `limits` being a Hash, and a `daily_spend_cap` from USD 0.01 to 1,000 in whole cents raise the API's `ValidationError` (the first fault, in the body's order); an update with nothing to change, a malformed `idempotency_key`, `list`'s filters and `limit`, and a bulk revoke without a label or with over 1,000 `device_ids` raise its `BadRequestError` or `ValidationError`. A limit's ceiling (your workspace's own), the expiry's window and a name's characters are the API's to judge. The whole flow is in [Keys on devices](https://decisionnode.com/docs/patterns/device-keys).
 
 ## Per-key usage
 
@@ -720,7 +722,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.19) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.20) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 

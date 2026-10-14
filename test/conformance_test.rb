@@ -524,6 +524,7 @@ module Conformance
     when /\Abatches\.(.+)\z/ then batches(client.batches, Regexp.last_match(1), args)
     when /\Acollections\.(.+)\z/ then collections(client.collections, Regexp.last_match(1), args)
     when /\Ausage\.(.+)\z/ then usage(client.usage, Regexp.last_match(1), args)
+    when /\Akeys\.(.+)\z/ then keys(client.keys, Regexp.last_match(1), args)
     else client.public_send(method, **kwargs(args))
     end
   end
@@ -544,10 +545,22 @@ module Conformance
     rest.empty? ? api.public_send(name, *ids) : api.public_send(name, *ids, **rest)
   end
 
-  # The collections and usage calls' results, the API's objects as sent;
-  # "collections" and "usage_items" are lists.
-  COLLECTION_KINDS = %w[collection collections item item_page deleted key_usage usage_page usage_items].freeze
-  LIST_KINDS = %w[collections usage_items].freeze
+  # The keys calls (suite 1.20): create's name, update's and revoke's key id
+  # and revoke_by_labels' labels positional, the rest as keywords, each passed
+  # only when the case gives it (a null as nil, which clears it).
+  def keys(api, name, args)
+    first = { "create" => "name", "update" => "key_id", "revoke" => "key_id", "revoke_by_labels" => "labels" }[name]
+    return api.public_send(name, **kwargs(args)) if first.nil?
+
+    rest = kwargs(args.except(first))
+    rest.empty? ? api.public_send(name, args[first]) : api.public_send(name, args[first], **rest)
+  end
+
+  # The collections, usage and keys calls' results, the API's objects as sent;
+  # "collections", "usage_items" and "api_keys" are lists.
+  COLLECTION_KINDS = %w[collection collections item item_page deleted key_usage usage_page usage_items
+                        created_key api_key key_page api_keys key_revoked keys_revoked].freeze
+  LIST_KINDS = %w[collections usage_items api_keys].freeze
 
   def check_collection_result!(kind, expected, result, path)
     if LIST_KINDS.include?(kind)
