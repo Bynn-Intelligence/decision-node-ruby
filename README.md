@@ -503,7 +503,7 @@ Opening a session when the key already holds its most open sessions raises `Deci
 
 ## Batches
 
-The Batch API answers requests within 24 hours at half the price. A request is a Hash of `decide`'s arguments plus a `custom_id`.
+The Batch API answers requests at the batch price: 50% off the live price on `decisionnode-flash`, 30% off on `decisionnode-moe` (each model's `batch_price_factor` in `models`, 0.5 and 0.7). There is no set time at which a batch runs or finishes, so poll for it. Requests not answered within 24 hours of finalizing expire and are not charged. A request is a Hash of `decide`'s arguments plus a `custom_id`.
 
 ```ruby
 requests = tickets.map.with_index do |t, i|

@@ -95,7 +95,9 @@ class DecisionNode
     end
   end
 
-  # The Batch API: decisions at half the price, answered within 24 hours.
+  # The Batch API: decisions at the batch price. No time is set for a batch
+  # to run or finish; requests not answered within 24 hours of finalizing
+  # expire and are not charged.
   # Reached as DecisionNode#batches.
   #
   #   b = dn.batches.create([{ custom_id: "t1", state: "...", questions: { ... } }])
