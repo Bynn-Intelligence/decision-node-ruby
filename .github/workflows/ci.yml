@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 env:
-  # The commit of the conformance suite this gem is tested against (suite 1.17, tag v1.17).
+  # The commit of the conformance suite this gem is tested against (suite 1.19, tag v1.19).
   # Change it here, and only here, to move to a newer suite.
-  CONFORMANCE_REF: 23957bf6992fa53918a9f63ab16c8a6c8b9203f9
+  CONFORMANCE_REF: 75838a478b30e00089afbb2bfc1ff99e6052b658
 
 jobs:
   test:

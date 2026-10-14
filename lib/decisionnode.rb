@@ -29,6 +29,7 @@ require_relative "decisionnode/session"
 require_relative "decisionnode/supervisor"
 require_relative "decisionnode/batches"
 require_relative "decisionnode/collections"
+require_relative "decisionnode/keys"
 require_relative "decisionnode/client"
 
 class DecisionNode

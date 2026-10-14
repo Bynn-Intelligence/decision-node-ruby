@@ -523,6 +523,7 @@ module Conformance
     when "supervise" then supervise(client, args)
     when /\Abatches\.(.+)\z/ then batches(client.batches, Regexp.last_match(1), args)
     when /\Acollections\.(.+)\z/ then collections(client.collections, Regexp.last_match(1), args)
+    when /\Ausage\.(.+)\z/ then usage(client.usage, Regexp.last_match(1), args)
     else client.public_send(method, **kwargs(args))
     end
   end
@@ -535,14 +536,23 @@ module Conformance
     rest.empty? ? api.public_send(name, *ids) : api.public_send(name, *ids, **rest)
   end
 
-  # The collections calls' results, the API's objects as sent;
-  # "collections" is the list.
-  COLLECTION_KINDS = %w[collection collections item item_page deleted].freeze
+  # The usage calls (suite 1.18): the key id positional, the rest as
+  # keywords, each passed only when the case gives it.
+  def usage(api, name, args)
+    ids = args.values_at("key_id").compact
+    rest = kwargs(args.except("key_id"))
+    rest.empty? ? api.public_send(name, *ids) : api.public_send(name, *ids, **rest)
+  end
+
+  # The collections and usage calls' results, the API's objects as sent;
+  # "collections" and "usage_items" are lists.
+  COLLECTION_KINDS = %w[collection collections item item_page deleted key_usage usage_page usage_items].freeze
+  LIST_KINDS = %w[collections usage_items].freeze
 
   def check_collection_result!(kind, expected, result, path)
-    if kind == "collections"
-      raise Fail, "#{path}: expected a list of collections, got #{result.class}" unless result.is_a?(Array)
-      raise Fail, "#{path}: expected #{expected.size} collections, got #{result.size}" unless expected.size == result.size
+    if LIST_KINDS.include?(kind)
+      raise Fail, "#{path}: expected a list, got #{result.class}" unless result.is_a?(Array)
+      raise Fail, "#{path}: expected #{expected.size} entries, got #{result.size}" unless expected.size == result.size
 
       expected.zip(result).each_with_index { |(e, r), i| match!(e, r, "#{path}[#{i}]") }
       return
@@ -727,6 +737,11 @@ module Conformance
     if exp.key?("query")
       query = URI.decode_www_form(got["query"].to_s).each_with_object({}) { |(k, v), h| h[k] ||= v }
       raise Fail, "#{where} query: expected #{exp['query']}, got #{query}" unless query == exp["query"]
+    end
+    if exp.key?("query_all")
+      # Suite 1.18: every value of each parameter, a repeated one in its order.
+      every = URI.decode_www_form(got["query"].to_s).each_with_object({}) { |(k, v), h| (h[k] ||= []) << v }
+      raise Fail, "#{where} query: expected #{exp['query_all']}, got #{every}" unless every == exp["query_all"]
     end
     if exp.key?("status") && got["status"] != exp["status"]
       raise Fail, "#{where} status: the mock answered #{got['status']}, expected #{exp['status']}"
@@ -1047,7 +1062,7 @@ module Conformance
         raise Fail, "request sequence[#{i}]: #{got[i]} answered #{rec['status']}, expected #{spec['status']}"
       end
       checks = spec.slice("headers", "header_patterns", "absent_headers", "body_checks", "jsonl_count", "jsonl_checks",
-                          "body_base64", "body_sha256", "query")
+                          "body_base64", "body_sha256", "query", "query_all")
       check_request!(checks.merge("method" => spec["method"], "any_body" => true), rec, "request sequence[#{i}]") unless checks.empty?
     end
   end

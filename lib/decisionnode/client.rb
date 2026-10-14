@@ -70,6 +70,12 @@ class DecisionNode
   # Collections of faces, a DecisionNode::Collections.
   attr_reader :collections
 
+  # Per-key usage, a DecisionNode::KeyUsage.
+  attr_reader :usage
+
+  # Decisions-only keys for devices, a DecisionNode::Keys.
+  attr_reader :keys
+
   # Every argument is optional.
   #
   # api_key::     the API key; else DECISIONNODE_API_KEY.
@@ -118,6 +124,8 @@ class DecisionNode
     @inflight_lock = Mutex.new
     @batches = Batches.new(self)
     @collections = Collections.new(self)
+    @usage = KeyUsage.new(self)
+    @keys = Keys.new(self)
   end
 
   def inspect
@@ -802,6 +810,7 @@ class DecisionNode
   #          :idempotent (a call that carries its own Idempotency-Key, the
   #          same on every attempt) as :default, and also a 409
   #          `idempotency_in_progress` after its Retry-After.
+  #          Under every policy a 429 `key_spend_cap_reached` is never retried.
   # timeout:: seconds for each attempt in place of the client's timeout.
   # extra_headers:: headers this call adds, after the client's own.
   #
@@ -915,6 +924,9 @@ class DecisionNode
     # An enrollment with no price set: a retry never cures it, and the API
     # sends no Retry-After for it.
     return false if error.status == 529 && error.details&.dig("reason") == "enrollment_unpriced"
+    # A key past its daily spend cap: its Retry-After runs to the cap's reset
+    # at 00:00 UTC, so it is raised at once.
+    return false if error.status == 429 && error.error_type == "key_spend_cap_reached"
 
     case policy
     when :mutation then [429, 529].include?(error.status)
