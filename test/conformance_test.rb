@@ -828,6 +828,11 @@ module Conformance
         entry = { "name" => m.name, "description" => m.description, "release_date" => m.release_date, "limits" => m.limits }
         listed = exp["models"][i].is_a?(Hash) ? exp["models"][i] : {}
         %w[fine_tuned base adapter_version status].each { |k| entry[k] = m.public_send(k) if listed.key?(k) }
+        # The typed prices are the entry's, as sent.
+        DecisionNode::ModelInfo::PRICES.each do |k|
+          sent = m.limits[k].is_a?(Numeric) ? m.limits[k] : nil
+          raise Fail, "models: #{m.name}.#{k} is #{short(m.public_send(k))}, the entry sent #{short(m.limits[k])}" unless same?(sent, m.public_send(k))
+        end
         entry
       end
       raise Fail, "models: expected #{short(exp['models'])}, got #{short(got)}" unless same?(exp["models"], got)

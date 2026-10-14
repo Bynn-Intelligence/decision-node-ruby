@@ -377,6 +377,26 @@ class BoostersTest < Minitest::Test
     assert_nil ready.adapter_version
   end
 
+  def test_models_read_prices_as_sent
+    prices = { "price_per_million_input" => 0.042, "price_per_million_output" => 0, "price_per_million_image" => 0.09,
+               "price_per_million_video" => 0.09, "batch_price_factor" => 0.7 }
+    http = FakeHTTP.new(FakeHTTP.json(200, { "models" => [
+                                        { "name" => "decisionnode-moe", "description" => "d", "release_date" => "2026-10-01", **prices },
+                                        { "name" => "decisionnode-flash@acme/triage", "description" => "d", "release_date" => "2026-10-01",
+                                          "price_per_million_input" => 0.055, "fine_tuned" => true },
+                                        { "name" => "x", "description" => "d", "release_date" => "2026-10-01",
+                                          "price_per_million_input" => "0.04", "batch_price_factor" => true }
+                                      ] }))
+    moe, tuned, odd = client(http).models
+    assert_equal [0.042, 0, 0.09, 0.09, 0.7], DecisionNode::ModelInfo::PRICES.map { |k| moe.public_send(k) }
+    assert_equal prices, moe.limits
+    assert_equal 0.055, tuned.price_per_million_input
+    assert_nil tuned.batch_price_factor
+    assert_nil odd.price_per_million_input
+    assert_nil odd.batch_price_factor
+    assert_equal true, odd.limits["batch_price_factor"]
+  end
+
   def test_held_limits_are_found_for_a_fine_tuned_name
     models = { "models" => [{ "name" => "decisionnode-moe@acme/fraud", "description" => "d", "release_date" => "2026-10-09",
                               "fine_tuned" => true, "max_images" => 1 }] }

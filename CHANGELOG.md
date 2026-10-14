@@ -26,6 +26,7 @@ Implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERS
 - Item metadata, checked before sending as the API checks it: a Hash of at most 20 keys of 1 to 40 of `a-z 0-9 _`, each value a text of at most 500 characters, a number, true or false, each fault the API's `value_error` entry. `list_items` with both `reference` and `reference_prefix`, or either not 1 to 64 of `A-Z a-z 0-9 _ . : -`, raises the API's `BadRequestError`. Errors gain `details`, the body's `detail.details` when it is an object; a 529 whose `details` reason is `enrollment_unpriced` is never retried.
 - A decision whose boosters name `ocr` waits 30 seconds per attempt when the client has no `timeout:` of its own (a timeout you set is used as given), and is never retried after a timeout, since the server finishes that attempt and may bill it. Its other retries stay.
 - The README documents boosters, how they are billed and their errors, fine-tuned model names and the fallback.
+- `ModelInfo#price_per_million_input`, `price_per_million_output`, `price_per_million_image`, `price_per_million_video` and `batch_price_factor`: the entry's prices as sent, each `nil` when it states none (a fine-tuned model states no `batch_price_factor`). `limits` and `raw` keep them too.
 
 ### Changed
 

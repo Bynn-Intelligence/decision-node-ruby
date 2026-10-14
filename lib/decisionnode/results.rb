@@ -490,6 +490,17 @@ class DecisionNode
     # A fine-tuned model's status: "deployed" (it answers decisions), "ready"
     # (trained, not deployed), or another value as sent; else nil.
     attr_reader :status
+    # The prices in USD per million input, output, image and video tokens,
+    # as sent; nil when the entry states none.
+    attr_reader :price_per_million_input, :price_per_million_output,
+                :price_per_million_image, :price_per_million_video
+    # The share of the live prices a batch line on this model pays, as sent;
+    # nil when the entry states none, as on a fine-tuned model.
+    attr_reader :batch_price_factor
+
+    # The prices an entry states, read into the readers of the same names.
+    PRICES = %w[price_per_million_input price_per_million_output price_per_million_image
+                price_per_million_video batch_price_factor].freeze
 
     def initialize(raw)
       @raw = raw.is_a?(Hash) ? raw : {}
@@ -501,6 +512,7 @@ class DecisionNode
       @base = @raw["base"].is_a?(String) ? @raw["base"] : nil
       @adapter_version = @raw["adapter_version"].is_a?(Integer) ? @raw["adapter_version"] : nil
       @status = @raw["status"].is_a?(String) ? @raw["status"] : nil
+      PRICES.each { |k| instance_variable_set("@#{k}", @raw[k].is_a?(Numeric) ? @raw[k] : nil) }
     end
 
     # Whether this is a fine-tuned model.
