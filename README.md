@@ -8,6 +8,14 @@ Ruby 3.2 or later. One runtime dependency, `websocket-driver`, used by sessions 
 
 ## Install
 
+Not on RubyGems yet: the first release publishes it there. Until then, install it from GitHub:
+
+```sh
+bundle add bynn-decisionnode --git https://github.com/Bynn-Intelligence/decision-node-ruby
+```
+
+Once it is on RubyGems:
+
 ```sh
 bundle add bynn-decisionnode
 ```
