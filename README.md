@@ -162,7 +162,7 @@ end
 | `NumberAnswer` | `number` (the most probable value of the grid), `expected` (the probability-weighted mean), `confidence` (the probability of `number`), `probabilities` (by the value exactly as the server wrote it, `"7"`, `"3.5"`) |
 | `PointAnswer` | `x`, `y`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
 | `BoxAnswer` | `x1`, `y1`, `x2`, `y2`, `present`, `confidence`, `image`, `width`, `height` (see "Points and boxes") |
-| `ModelInfo` | `name`, `description`, `release_date`, `limits` (every other field of the entry), and `sessions` and `batch`, the session and Batch API limits; `limit("sessions", "max_per_key")` reads one. A fine-tuned model's entry also has `fine_tuned`, `base`, `adapter_version` and `status` (see "Fine-tuned models") |
+| `ModelInfo` | `name`, `description`, `release_date`, `limits` (every other field of the entry, its prices included: `price_per_million_input`, `price_per_million_output`, `price_per_million_image` and `price_per_million_video`, in USD per million tokens, and `batch_price_factor`), and `sessions` and `batch`, the session and Batch API limits; `limit("sessions", "max_per_key")` reads one. A fine-tuned model's entry also has `fine_tuned`, `base`, `adapter_version` and `status` (see "Fine-tuned models") |
 
 Answers are read by question id. An answer of a type this version does not know is returned as a `DecisionNode::UnknownAnswer` with its `type` and `raw` fields, so the rest of the decision still parses. So is an answer of a known type with a field missing or of the wrong type (a `truth` answer without a number in `truth`, for example): the decision does not fail. All answer classes derive from `DecisionNode::Answer`.
 
@@ -503,7 +503,7 @@ Opening a session when the key already holds its most open sessions raises `Deci
 
 ## Batches
 
-The Batch API answers requests at the batch price: 50% off the live price on `decisionnode-flash`, 30% off on `decisionnode-moe` (each model's `batch_price_factor` in `models`, 0.5 and 0.7). There is no set time at which a batch runs or finishes, so poll for it. Requests not answered within 24 hours of finalizing expire and are not charged. A request is a Hash of `decide`'s arguments plus a `custom_id`.
+The Batch API answers requests at the batch price: 50% off the live price on `decisionnode-flash`, 30% off on `decisionnode-moe`. The batch price is each model's, its `batch_price_factor` in `models` (0.5 and 0.7; a fine-tuned model's entry states none), never the batch's, and each line's charge is in its usage. There is no set time at which a batch runs or finishes, so poll for it. Requests not answered within 24 hours of finalizing expire and are not charged. A request is a Hash of `decide`'s arguments plus a `custom_id`.
 
 ```ruby
 requests = tickets.map.with_index do |t, i|
@@ -532,7 +532,7 @@ The calls one by one, on `dn.batches`:
 | `results(batch_id)` | `GET /v1/batches/{id}/results`, read from the network line by line as it arrives | One `BatchResult` per request, in upload order; with a block, each one as its line arrives |
 | `cancel(batch_id)` | `POST /v1/batches/{id}/cancel` | `Batch` |
 
-A `Batch` has every field of the batch object by name (`id`, `state`, `counters`, `created_at`, `finalized_at`, `expires_at`, `ended_at`, `results_url`, `results_expire_at`, `price_factor`, `usage`, `error`) and `ended?`. A `BatchResult` has `custom_id`, `status` (an Integer, or `"expired"` or `"cancelled"`), `headers`, `decision` (a `Decision` for a 200 line) and `error` (for an error line, the error `decide` would have raised, as a value).
+A `Batch` has every field of the batch object by name (`id`, `state`, `counters`, `created_at`, `finalized_at`, `expires_at`, `ended_at`, `results_url`, `results_expire_at`, `usage`, `error`) and `ended?`. A `BatchResult` has `custom_id`, `status` (an Integer, or `"expired"` or `"cancelled"`), `headers`, `decision` (a `Decision` for a 200 line) and `error` (for an error line, the error `decide` would have raised, as a value).
 
 Every line carries `custom_id`, `model` (the request's, else the client's) and `state` (`""` when absent), and every line of a call is checked before anything is sent. Its images follow the threshold of "Images", per line, and its videos go inline with it. `get`, `list`, `results` and `cancel` are retried like every call. `create`, `add` and `finalize` are retried only on 429 and 529, never after a timeout, a lost answer or a 5xx, since a repeat could make a second draft. A `finalize` answered with a 409 is resolved by reading the batch: if it is no longer a draft, the earlier finalize went through and the batch is returned.
 

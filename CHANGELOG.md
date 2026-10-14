@@ -33,6 +33,10 @@ Implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERS
 - An error whose body is not JSON (a page from a proxy or the service's edge, or no body) is classified by its status alone, with `error_type` `nil`, and its message is `HTTP <status> <text>` from a fixed table (`HTTP 413 Content Too Large`), followed by the request id when the response has one. The body is no longer kept on the error.
 - The default model is `decisionnode-moe`, the family id of the main model (it was `decisionnode-latest`), and the documentation uses the family ids `decisionnode-moe` and `decisionnode-flash`. A pinned id is `decisionnode-<family>-<version>`, its version from `models`; the older ids are still accepted by the API and sent as given.
 
+### Removed
+
+- `Batch#price_factor`. The API does not send it: the batch price is each model's `batch_price_factor` in `models` (none on a fine-tuned model), and each line's charge is in its usage.
+
 ## [0.2.0] - Unreleased
 
 Implements version 1.2 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.2"`): sixteen images a request, videos sent as frames, and point and box questions.

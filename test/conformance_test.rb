@@ -110,9 +110,17 @@ module Conformance
     end
   end
 
+  # An expected value meaning the key must not be there at all (suite 1.17).
+  ABSENT = { "$absent" => true }.freeze
+
   def match!(expected, actual, path)
     if expected.is_a?(Hash) && actual.is_a?(Hash) && !pattern?(expected)
       expected.each do |k, v|
+        if v == ABSENT
+          raise Fail, "#{path}.#{k}: expected no such key, got #{short(actual[k])}" if actual.key?(k)
+
+          next
+        end
         raise Fail, "#{path}.#{k}: missing (expected #{short(v)})" unless actual.key?(k)
 
         if EXACT.include?(k)
@@ -126,6 +134,14 @@ module Conformance
       end
     elsif !same?(expected, actual)
       raise Fail, "#{path}: expected #{short(expected)}, got #{short(actual)}"
+    end
+  end
+
+  # A batch compares as sent; a key expected absent is neither sent nor a reader of Batch.
+  def match_batch!(expected, batch, path)
+    match!(expected, batch.to_h, path)
+    (expected.is_a?(Hash) ? expected : {}).each do |k, v|
+      raise Fail, "#{path}.#{k}: expected no such field on Batch" if v == ABSENT && batch.respond_to?(k)
     end
   end
 
@@ -820,7 +836,7 @@ module Conformance
     elsif exp.key?("batch")
       raise Fail, "batch: expected a Batch, got #{result.class}" unless result.is_a?(DecisionNode::Batch)
 
-      match!(exp["batch"], result.to_h, "batch")
+      match_batch!(exp["batch"], result, "batch")
     elsif exp.key?("batch_page")
       raise Fail, "batch_page: expected a BatchPage, got #{result.class}" unless result.is_a?(DecisionNode::BatchPage)
 
@@ -892,13 +908,13 @@ module Conformance
     when "batch"
       raise Fail, "#{path}: expected a Batch, got #{result.class}" unless result.is_a?(DecisionNode::Batch)
 
-      match!(spec.fetch("batch", {}), result.to_h, "#{path}.batch")
+      match_batch!(spec.fetch("batch", {}), result, "#{path}.batch")
     when "batch_page" then match!(spec.fetch("batch_page", {}), result.to_h, "#{path}.batch_page")
     when *COLLECTION_KINDS then check_collection_result!(spec["result"], spec.fetch(spec["result"], {}), result, "#{path}.#{spec['result']}")
     when "batch_results" then check_results_spec!(spec, result, path)
     when "batch_run"
       batch, results = result
-      match!(spec.fetch("batch", {}), batch.to_h, "#{path}.batch")
+      match_batch!(spec.fetch("batch", {}), batch, "#{path}.batch")
       check_results_spec!(spec, results, path)
     when "checked"
       raise Fail, "#{path}: the check returned #{result.inspect}; a request that passes returns nil" unless result.nil?

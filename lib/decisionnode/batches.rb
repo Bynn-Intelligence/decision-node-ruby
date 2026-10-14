@@ -5,9 +5,11 @@ require "uri"
 
 class DecisionNode
   # A batch: every field of the batch object, by name or as `batch["field"]`.
+  # A batch states no price: the batch price is each model's
+  # `batch_price_factor` in `models`, and each line's charge is in its usage.
   class Batch
     FIELDS = %w[id state counters created_at finalized_at expires_at ended_at results_url
-                results_expire_at price_factor usage error].freeze
+                results_expire_at usage error].freeze
     ENDED = %w[completed failed cancelled expired].freeze
 
     # The batch object as received.
