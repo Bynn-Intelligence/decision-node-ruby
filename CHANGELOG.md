@@ -32,7 +32,7 @@ Implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERS
 - `DecisionNode::DepthReading`, a reading of the `bynn_depth` booster (Depth Vision): `ahead`, `directions`, `ground`, `grid_rows`, `grid_cols`, `grid`, `depth_min`, `depth_max`, `depth_median`, `width` and `height`, in meters and pixels as sent.
 - `DecisionNode::SegmentReading`, a reading of the `bynn_segment` booster (Segment Vision): `width`, `height`, `prompts`, `instances` (each a `SegmentInstance` with `label`, `score`, `box`, `polygon`, `area`, `centroid`, `opening` as a `SegmentOpening`, `depth` as a `SegmentDepth` and `size_m` as a `SegmentSize` with its `SegmentExtent`), `depth_source` and `assumed_hfov_deg`. An absent `ahead`, `depth_source`, `assumed_hfov_deg`, `opening`, `depth`, `size_m` (or a distance inside `depth`, or the size's `opening`) reads as `nil`. A reading with a required field missing or of the wrong type, `directions` other than 7 entries, or a negative or fractional grid size or picture side stays an `UnknownReading`.
 - The README lists every booster the API serves, `face_detection`, `face_recognition`, `ocr`, `bynn_depth` and `bynn_segment` beside `age` and `ai_generated`, with their options and readings.
-- The conformance tests run suite 1.21.
+- The conformance tests run suite 1.22.
 
 ### Changed
 
