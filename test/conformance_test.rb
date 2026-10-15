@@ -241,6 +241,8 @@ module Conformance
   end
 
   AGE_FIELDS = %w[image faces age_years low high confidence].freeze
+  DEPTH_FIELDS = %w[image ahead directions ground grid_rows grid_cols grid depth_min depth_max depth_median width height].freeze
+  SEGMENT_FIELDS = %w[image width height prompts depth_source assumed_hfov_deg].freeze
   AI_GENERATED_FIELDS = %w[image generated confidence method c2pa_signer].freeze
 
   def norm_reading(reading)
@@ -264,11 +266,32 @@ module Conformance
           { "box" => norm_box(m.box), "score" => m.score, "collection" => m.collection, "reference" => m.reference,
             "name" => m.name, "label" => m.label, "collection_name" => m.collection_name, "metadata" => m.metadata }
         end }
+    when DecisionNode::DepthReading
+      DEPTH_FIELDS.to_h { |k| [k, reading.public_send(k)] }.merge("kind" => "bynn_depth")
+    when DecisionNode::SegmentReading
+      SEGMENT_FIELDS.to_h { |k| [k, reading.public_send(k)] }
+                    .merge("kind" => "bynn_segment", "instances" => reading.instances.map { |i| norm_instance(i) })
     when DecisionNode::UnknownReading
       { "kind" => "unknown", "raw" => reading.raw }
     else
       raise Fail, "not a reading: #{reading.class}"
     end
+  end
+
+  # A Segment Vision match as the cases write it: the wire's fields and
+  # shapes, an empty opening, depth or size_m (and the size's opening) as nil.
+  def norm_instance(instance)
+    o, d, s = instance.opening, instance.depth, instance.size_m
+    {
+      "label" => instance.label, "score" => instance.score, "box" => instance.box, "polygon" => instance.polygon,
+      "area" => instance.area, "centroid" => instance.centroid,
+      "opening" => o && { "polygon" => o.polygon, "centroid" => o.centroid, "width" => o.width, "height" => o.height,
+                          "offset" => o.offset, "area" => o.area },
+      "depth" => d && { "median" => d.median, "opening_median" => d.opening_median,
+                        "opening_rim_median" => d.opening_rim_median },
+      "size_m" => s && { "width" => s.width, "height" => s.height,
+                         "opening" => s.opening && { "width" => s.opening.width, "height" => s.opening.height } }
+    }
   end
 
   def norm_box(box)
