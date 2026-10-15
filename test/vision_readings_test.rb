@@ -80,9 +80,16 @@ class VisionReadingsTest < Minitest::Test
     assert_equal({ "image" => "front", "readable" => false }, reading.raw)
   end
 
+  def test_depth_without_ahead_reads_nil
+    reading, = evidence("bynn_depth", [changed(DEPTH, ["ahead"], :remove)])
+    assert_instance_of DecisionNode::DepthReading, reading
+    assert_nil reading.ahead
+  end
+
   def test_malformed_depth_is_generic
     [
-      [["ahead"], :remove], [["ahead"], "near"], [["directions"], "left"], [["directions", 0], "far"],
+      [["ahead"], "near"], [["directions"], "left"], [["directions"], [1.0] * 6], [["directions"], [1.0] * 8],
+      [["directions", 0], "far"],
       [["ground"], 1], [["grid_rows"], 2.5], [["grid"], [[1.0, "x"]]], [["grid"], [1.0, 2.0]],
       [["depth_median"], nil], [["width"], "810"], [["image"], 3]
     ].each do |path, value|
@@ -127,15 +134,32 @@ class VisionReadingsTest < Minitest::Test
     assert_empty empty.instances
   end
 
+  def test_segment_fields_absent_read_as_nil
+    {
+      ["depth_source"] => ->(r) { r.depth_source },
+      ["assumed_hfov_deg"] => ->(r) { r.assumed_hfov_deg },
+      ["instances", 0, "opening"] => ->(r) { r.instances.first.opening },
+      ["instances", 0, "depth"] => ->(r) { r.instances.first.depth },
+      ["instances", 0, "depth", "opening_median"] => ->(r) { r.instances.first.depth.opening_median },
+      ["instances", 0, "size_m"] => ->(r) { r.instances.first.size_m },
+      ["instances", 0, "size_m", "opening"] => ->(r) { r.instances.first.size_m.opening }
+    }.each do |path, read|
+      reading, = evidence("bynn_segment", [changed(SEGMENT, path, :remove)])
+      assert_instance_of DecisionNode::SegmentReading, reading, path.inspect
+      assert_nil read.call(reading), path.inspect
+    end
+  end
+
   def test_malformed_segment_is_generic
     [
-      [["prompts"], "gate"], [["prompts", 0], 7], [["instances"], { "label" => "gate" }], [["depth_source"], :remove],
-      [["assumed_hfov_deg"], nil], [["width"], 1280.5], [["instances", 0, "label"], nil],
+      [["prompts"], "gate"], [["prompts", 0], 7], [["instances"], { "label" => "gate" }], [["depth_source"], 5],
+      [["assumed_hfov_deg"], "wide"], [["width"], 1280.5], [["instances", 0, "label"], nil],
       [["instances", 0, "box"], [0.1, 0.2, 0.3]], [["instances", 0, "polygon"], [[0.1, 0.2, 0.3]]],
-      [["instances", 0, "centroid"], { "x" => 0.5, "y" => 0.5 }], [["instances", 0, "opening"], :remove],
-      [["instances", 0, "opening", "offset"], [0.0]], [["instances", 0, "depth"], 5.05],
-      [["instances", 0, "depth", "opening_median"], :remove], [["instances", 0, "size_m"], :remove],
-      [["instances", 0, "size_m", "opening"], :remove], [["instances", 0, "size_m", "opening", "width"], nil]
+      [["instances", 0, "centroid"], { "x" => 0.5, "y" => 0.5 }], [["instances", 0, "opening"], "hole"],
+      [["instances", 0, "opening", "offset"], [0.0]], [["instances", 0, "opening", "area"], :remove],
+      [["instances", 0, "depth"], 5.05], [["instances", 0, "depth", "opening_median"], "far"],
+      [["instances", 0, "size_m"], [2.45, 2.33]], [["instances", 0, "size_m", "width"], :remove],
+      [["instances", 0, "size_m", "opening"], 1.82], [["instances", 0, "size_m", "opening", "width"], nil]
     ].each do |path, value|
       raw = changed(SEGMENT, path, value)
       reading, = evidence("bynn_segment", [raw])

@@ -371,7 +371,8 @@ class DecisionNode
     # picture, the floor or ground left out); nil when none is found.
     attr_reader :ahead
     # The same in 7 equal vertical strips of the picture, left to right, each
-    # meters or nil.
+    # meters or nil; a reading with another number of them is an
+    # UnknownReading.
     attr_reader :directions
     # true when a floor or ground was found and left out of `ahead` and
     # `directions`; false when none was, and they include everything.
@@ -386,9 +387,13 @@ class DecisionNode
     # The picture's size in pixels, turned upright.
     attr_reader :width, :height
 
+    # A reading's directions: 7 equal vertical strips of the picture.
+    DIRECTIONS = 7
+
     def self.well_formed?(raw)
-      raw["image"].is_a?(String) && raw.key?("ahead") && (raw["ahead"].nil? || number?(raw["ahead"])) &&
-        raw["directions"].is_a?(Array) && raw["directions"].all? { |d| d.nil? || number?(d) } &&
+      raw["image"].is_a?(String) && (raw["ahead"].nil? || number?(raw["ahead"])) &&
+        raw["directions"].is_a?(Array) && raw["directions"].size == DIRECTIONS &&
+        raw["directions"].all? { |d| d.nil? || number?(d) } &&
         [true, false].include?(raw["ground"]) &&
         raw["grid_rows"].is_a?(Integer) && raw["grid_cols"].is_a?(Integer) &&
         raw["grid"].is_a?(Array) && raw["grid"].all? { |row| row.is_a?(Array) && row.all? { |c| number?(c) } } &&
@@ -451,13 +456,14 @@ class DecisionNode
       value.is_a?(Array) && value.all? { |p| numbers?(p, 2) }
     end
 
-    # An object or nil, the key present.
-    def present?(raw, key)
-      raw.key?(key) && (raw[key].nil? || raw[key].is_a?(Hash))
+    # An object, or nil or absent.
+    def object_or_nil?(raw, key)
+      raw[key].nil? || raw[key].is_a?(Hash)
     end
 
+    # A number, or nil or absent.
     def nullable?(raw, key)
-      raw.key?(key) && (raw[key].nil? || raw[key].is_a?(Numeric))
+      raw[key].nil? || raw[key].is_a?(Numeric)
     end
 
     def opening?(raw)
@@ -472,7 +478,7 @@ class DecisionNode
 
     def size?(raw)
       raw.nil? ||
-        (raw["width"].is_a?(Numeric) && raw["height"].is_a?(Numeric) && present?(raw, "opening") &&
+        (raw["width"].is_a?(Numeric) && raw["height"].is_a?(Numeric) && object_or_nil?(raw, "opening") &&
          (raw["opening"].nil? || (raw["opening"]["width"].is_a?(Numeric) && raw["opening"]["height"].is_a?(Numeric))))
     end
 
@@ -480,7 +486,7 @@ class DecisionNode
       raw.is_a?(Hash) && raw["label"].is_a?(String) && raw["score"].is_a?(Numeric) &&
         numbers?(raw["box"], 4) && points?(raw["polygon"]) && raw["area"].is_a?(Numeric) &&
         numbers?(raw["centroid"], 2) &&
-        %w[opening depth size_m].all? { |k| present?(raw, k) } &&
+        %w[opening depth size_m].all? { |k| object_or_nil?(raw, k) } &&
         opening?(raw["opening"]) && depth?(raw["depth"]) && size?(raw["size_m"])
     end
 
@@ -512,15 +518,16 @@ class DecisionNode
     attr_reader :instances
     # Where the distances come from ("bynn_depth"); nil with depth off.
     attr_reader :depth_source
-    # The horizontal field of view the sizes in meters assume, in degrees.
+    # The horizontal field of view the sizes in meters assume, in degrees; nil
+    # when the reading has none.
     attr_reader :assumed_hfov_deg
 
     def self.well_formed?(raw)
       raw["image"].is_a?(String) && raw["width"].is_a?(Integer) && raw["height"].is_a?(Integer) &&
         raw["prompts"].is_a?(Array) && raw["prompts"].all? { |p| p.is_a?(String) } &&
         raw["instances"].is_a?(Array) && raw["instances"].all? { |i| SegmentShapes.instance?(i) } &&
-        raw.key?("depth_source") && (raw["depth_source"].nil? || raw["depth_source"].is_a?(String)) &&
-        number?(raw["assumed_hfov_deg"])
+        (raw["depth_source"].nil? || raw["depth_source"].is_a?(String)) &&
+        (raw["assumed_hfov_deg"].nil? || number?(raw["assumed_hfov_deg"]))
     end
 
     def initialize(raw)
