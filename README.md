@@ -304,6 +304,11 @@ A booster is a specialist model that reads the request's images before the decis
 |---|---|---|
 | `age` | A picture of a person | How old the person is, with a range and a confidence (the largest face is read) |
 | `ai_generated` | Any picture | How likely the picture was made by an image generator, which generator most likely, and whether the file carries Content Credentials (C2PA) and who signed them |
+| `face_detection` | Any picture | How many faces the picture shows and where, a box and a confidence for each |
+| `face_recognition` | A picture of a person | Which faces match the collection the request names (see Collections): a box, a score and the matched item's reference for each |
+| `ocr` | Any picture | The picture's text, whole, or what the booster's `prompt` asks for |
+| `bynn_depth` (Depth Vision) | Any picture | How far away things are, in meters: the nearest obstacle straight ahead, seven directions from left to right, and a grid of the picture |
+| `bynn_segment` (Segment Vision) | Any picture | Where the things you name in words are: each one's outline, box and centre, and with depth on, its distance and size in meters |
 
 ```ruby
 d = dn.decide(
@@ -345,6 +350,32 @@ d = dn.decide(
 | `require` | `true`: a booster that fails or does not answer in time fails the request with the 529 `booster_unavailable`, which is retried like every 529. Left out or `false`: the decision runs without that reading, and `evidence` says why. |
 | `options` | The booster's settings, a Hash, for boosters that have any. The API checks them. |
 
+| Booster | `options` |
+|---|---|
+| `face_recognition` | `collection` (required): `celebrities`, or the id of one of your collections; `threshold`, 0 to 1 (0.5): a face scored below it is no match |
+| `ocr` | `prompt`: the model's instruction, at most 2,000 characters; left out, all the visible text |
+| `bynn_depth` | `grid_size`: the grid's cells per side, 2 to 16 (8) |
+| `bynn_segment` | `prompt` (required): what to find, one phrase as a String or 1 to 4 phrases as an Array, each at most 120 characters; `max_instances`, 1 to 16 (8); `min_score`, 0 to 1 (0.25); `polygon_points`, the points of each outline, 3 to 64 (24); `depth`, distances and sizes in meters (`true`) |
+
+```ruby
+d = dn.decide(
+  images: [DecisionNode::Image.new("cam", url: "https://files.example.com/drone/frame-0412.jpg")],
+  boosters: [
+    DecisionNode::Booster.new("bynn_depth", options: { "grid_size" => 8 }),
+    DecisionNode::Booster.new("bynn_segment", options: { "prompt" => ["landing pad", "person"] })
+  ],
+  questions: { clear: DecisionNode.truth("Is the landing pad clear of people?") }
+)
+
+depth = d.evidence["bynn_depth"].results.first     # a DecisionNode::DepthReading
+[depth.ahead, depth.directions[3], depth.ground]   # => [3.21, 2.81, true]
+d.evidence["bynn_segment"].results.first.instances.each do |found|
+  puts [found.label, found.score, found.centroid, found.depth&.median].inspect
+end
+```
+
+`bynn_segment`'s `prompt` as a String is always one phrase; send several as an Array. Descriptive phrases match better than short names: "purple octagonal frame on a pole" finds what "purple gate" may not. Each picture it reads is one booster call, its depth included. Depth Vision's and Segment Vision's distances are estimates from one picture, for decisions and planning, never a safety stop: a robot or a drone uses stereo cameras or LiDAR for that.
+
 Boosters go with `decide`, the helpers, `decide_many` and batch requests; sessions take none. They read images in every form: a URL, inline bytes or an upload. Without `boosters:` (or with an empty Array) the request has no `boosters` field at all. Nothing about boosters is checked before sending: the API answers a malformed list, an unknown name and a booster turned off before any booster runs and before any charge.
 
 `d.evidence` holds one `DecisionNode::Evidence` per booster the request named, by name in the request's order, and is `nil` when it named none:
@@ -354,6 +385,11 @@ Boosters go with `decide`, the helpers, `decide_many` and batch requests; sessio
 | `Evidence` | `version` (the booster version that read), `status` (`ok`, `timeout`, `error` or `skipped`, when none of the request's images is one it reads), `latency_ms`, `billed_calls` (the calls of this booster billed on this request), `results` (one reading per image the booster was to read; a picture it did not read, because it timed out or failed, or could not decode, `readable` false, is an `UnknownReading` holding those fields, and `status` says why), `raw` |
 | `AgeReading` | `image`, `faces` (how many faces were found), and `age_years`, `low`, `high`, `confidence`, each `nil` when `faces` is 0 |
 | `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, when the file's trusted Content Credentials declare it generated or edited by AI), `top_generator` (`name` and `probability` of the likeliest generator when the reading says likely generated; `nil` otherwise, and always on a `c2pa` reading), `c2pa_signer` (who signed the file's Content Credentials when they are trusted, else `nil`), `c2pa` (`"untrusted"` when the file carries Content Credentials that validate but are not trusted, which change nothing in the reading; else `nil`) |
+| `FaceDetectionReading` | `image`, `faces` (how many faces the picture shows; 0 is a reading), `detections` (at most 64, each a `FaceDetection`: `box`, a `FaceBox` with the corners `x1`, `y1`, `x2`, `y2` in the request's units, and `confidence`) |
+| `FaceRecognitionReading` | `image`, `faces` (how many faces were searched), `matches` (best first, each a `FaceMatch`: `box`, `score`, `collection`, `reference`, `name` for a public figure, `label` and `metadata` for your own item, `collection_name`), `collection_name` (your collection's name) |
+| `OcrReading` | `image`, `text` (the reading; empty when the picture shows no text), `truncated` (`true` when the reading was cut at the model's context limit) |
+| `DepthReading` | `image`, `ahead` (meters to the nearest obstacle straight ahead, the floor left out; `nil` when none is found), `directions` (7 entries, left to right, each meters or `nil`), `ground` (whether a floor or ground was found and left out), `grid_rows`, `grid_cols`, `grid` (rows of meters from the top left), `depth_min`, `depth_max`, `depth_median`, `width`, `height` (the picture's size in pixels) |
+| `SegmentReading` | `image`, `width`, `height`, `prompts` (the phrases searched for), `instances` (best first, each a `SegmentInstance`: `label`, `score`, `box` `[x1, y1, x2, y2]`, `polygon` `[[x, y], ...]`, `area`, `centroid` `[x, y]`, `opening` (a `SegmentOpening` for the hole of a gate, a doorway or a ring, or `nil`), `depth` (a `SegmentDepth`: `median`, `opening_median`, `opening_rim_median`) and `size_m` (a `SegmentSize` in meters: `width`, `height`, `opening`), both `nil` with depth off), `depth_source`, `assumed_hfov_deg`. Coordinates are fractions of the picture from its top left |
 | `UnknownReading` | `image` and `raw`: a reading of a booster this version does not know, or one with a field missing or of the wrong type. The decision still parses. |
 
 A request whose boosters name `ocr` waits 30 seconds per attempt when the client has no `timeout:` of its own; a `timeout:` you set is used as given, even below 30. Such a request is never retried after a timeout, because the server finishes that attempt and may bill it: the `TimeoutError` is raised instead. Its other retries stay. Set a timeout of at least 30 seconds for requests that name `ocr`.

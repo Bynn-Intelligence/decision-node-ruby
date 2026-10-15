@@ -363,13 +363,186 @@ class DecisionNode
     end
   end
 
+  # A reading of the `bynn_depth` booster (Depth Vision): how far away things
+  # are in the picture, in meters. The distances are estimates from one
+  # picture, for decisions and planning, never a safety stop.
+  class DepthReading < Reading
+    # Meters to the nearest obstacle straight ahead (the middle third of the
+    # picture, the floor or ground left out); nil when none is found.
+    attr_reader :ahead
+    # The same in 7 equal vertical strips of the picture, left to right, each
+    # meters or nil.
+    attr_reader :directions
+    # true when a floor or ground was found and left out of `ahead` and
+    # `directions`; false when none was, and they include everything.
+    attr_reader :ground
+    # The grid's rows and columns.
+    attr_reader :grid_rows, :grid_cols
+    # The grid, row by row from the top left of the picture turned upright,
+    # each cell the distance of its part of the picture in meters.
+    attr_reader :grid
+    # The nearest, the farthest and the median distance in the picture.
+    attr_reader :depth_min, :depth_max, :depth_median
+    # The picture's size in pixels, turned upright.
+    attr_reader :width, :height
+
+    def self.well_formed?(raw)
+      raw["image"].is_a?(String) && raw.key?("ahead") && (raw["ahead"].nil? || number?(raw["ahead"])) &&
+        raw["directions"].is_a?(Array) && raw["directions"].all? { |d| d.nil? || number?(d) } &&
+        [true, false].include?(raw["ground"]) &&
+        raw["grid_rows"].is_a?(Integer) && raw["grid_cols"].is_a?(Integer) &&
+        raw["grid"].is_a?(Array) && raw["grid"].all? { |row| row.is_a?(Array) && row.all? { |c| number?(c) } } &&
+        %w[depth_min depth_max depth_median].all? { |k| number?(raw[k]) } &&
+        raw["width"].is_a?(Integer) && raw["height"].is_a?(Integer)
+    end
+
+    def initialize(raw)
+      super
+      @ahead = raw["ahead"]
+      @directions = raw["directions"]
+      @ground = raw["ground"]
+      @grid_rows = raw["grid_rows"]
+      @grid_cols = raw["grid_cols"]
+      @grid = raw["grid"]
+      @depth_min = raw["depth_min"]
+      @depth_max = raw["depth_max"]
+      @depth_median = raw["depth_median"]
+      @width = raw["width"]
+      @height = raw["height"]
+    end
+  end
+
+  # The opening a `bynn_segment` instance encloses, such as the hole of a
+  # gate, a doorway or a ring: its `polygon` (`[x, y]` points), `centroid`
+  # (`[x, y]`), `width` and `height`, `offset` (`[dx, dy]`, -1 to 1) and
+  # `area`, as fractions of the picture from its top left.
+  SegmentOpening = Struct.new(:polygon, :centroid, :width, :height, :offset, :area)
+
+  # How far away a `bynn_segment` instance is, with depth on: the `median`
+  # distance inside its outline, the `opening_median` seen through its
+  # opening and the `opening_rim_median` of the opening's rim, each meters or
+  # nil.
+  SegmentDepth = Struct.new(:median, :opening_median, :opening_rim_median)
+
+  # A `width` and a `height` in meters.
+  SegmentExtent = Struct.new(:width, :height)
+
+  # How large a `bynn_segment` instance is, with depth on: its `width` and
+  # `height` in meters, and its `opening`'s, a SegmentExtent or nil.
+  SegmentSize = Struct.new(:width, :height, :opening)
+
+  # One thing a `bynn_segment` reading found: the phrase it matched
+  # (`label`), its `score` from 0 to 1, `box` (`[x1, y1, x2, y2]`), `polygon`
+  # (its outline, `[x, y]` points), `area` and `centroid` (`[x, y]`), as
+  # fractions of the picture from its top left, turned upright; its
+  # `opening` (a SegmentOpening or nil), and with depth on its `depth` (a
+  # SegmentDepth) and `size_m` (a SegmentSize), each nil with depth off.
+  SegmentInstance = Struct.new(:label, :score, :box, :polygon, :area, :centroid, :opening, :depth, :size_m)
+
+  # The shapes of a segment reading, checked as sent.
+  module SegmentShapes
+    module_function
+
+    def numbers?(value, count = nil)
+      value.is_a?(Array) && value.all? { |v| v.is_a?(Numeric) } && (count.nil? || value.size == count)
+    end
+
+    def points?(value)
+      value.is_a?(Array) && value.all? { |p| numbers?(p, 2) }
+    end
+
+    # An object or nil, the key present.
+    def present?(raw, key)
+      raw.key?(key) && (raw[key].nil? || raw[key].is_a?(Hash))
+    end
+
+    def nullable?(raw, key)
+      raw.key?(key) && (raw[key].nil? || raw[key].is_a?(Numeric))
+    end
+
+    def opening?(raw)
+      raw.nil? ||
+        (points?(raw["polygon"]) && numbers?(raw["centroid"], 2) && numbers?(raw["offset"], 2) &&
+         %w[width height area].all? { |k| raw[k].is_a?(Numeric) })
+    end
+
+    def depth?(raw)
+      raw.nil? || %w[median opening_median opening_rim_median].all? { |k| nullable?(raw, k) }
+    end
+
+    def size?(raw)
+      raw.nil? ||
+        (raw["width"].is_a?(Numeric) && raw["height"].is_a?(Numeric) && present?(raw, "opening") &&
+         (raw["opening"].nil? || (raw["opening"]["width"].is_a?(Numeric) && raw["opening"]["height"].is_a?(Numeric))))
+    end
+
+    def instance?(raw)
+      raw.is_a?(Hash) && raw["label"].is_a?(String) && raw["score"].is_a?(Numeric) &&
+        numbers?(raw["box"], 4) && points?(raw["polygon"]) && raw["area"].is_a?(Numeric) &&
+        numbers?(raw["centroid"], 2) &&
+        %w[opening depth size_m].all? { |k| present?(raw, k) } &&
+        opening?(raw["opening"]) && depth?(raw["depth"]) && size?(raw["size_m"])
+    end
+
+    def instance(raw)
+      opening = raw["opening"]
+      depth = raw["depth"]
+      size = raw["size_m"]
+      SegmentInstance.new(
+        raw["label"], raw["score"], raw["box"], raw["polygon"], raw["area"], raw["centroid"],
+        opening && SegmentOpening.new(opening["polygon"], opening["centroid"], opening["width"], opening["height"],
+                                      opening["offset"], opening["area"]),
+        depth && SegmentDepth.new(depth["median"], depth["opening_median"], depth["opening_rim_median"]),
+        size && SegmentSize.new(size["width"], size["height"],
+                                size["opening"] && SegmentExtent.new(size["opening"]["width"], size["opening"]["height"]))
+      )
+    end
+  end
+  private_constant :SegmentShapes
+
+  # A reading of the `bynn_segment` booster (Segment Vision): where the things
+  # the request's `prompt` names are in the picture.
+  class SegmentReading < Reading
+    # The picture's size in pixels, turned upright.
+    attr_reader :width, :height
+    # The phrases searched for, cleaned as the request's `prompt` is.
+    attr_reader :prompts
+    # What was found, best first: each a SegmentInstance. Empty when nothing
+    # was, which is a reading.
+    attr_reader :instances
+    # Where the distances come from ("bynn_depth"); nil with depth off.
+    attr_reader :depth_source
+    # The horizontal field of view the sizes in meters assume, in degrees.
+    attr_reader :assumed_hfov_deg
+
+    def self.well_formed?(raw)
+      raw["image"].is_a?(String) && raw["width"].is_a?(Integer) && raw["height"].is_a?(Integer) &&
+        raw["prompts"].is_a?(Array) && raw["prompts"].all? { |p| p.is_a?(String) } &&
+        raw["instances"].is_a?(Array) && raw["instances"].all? { |i| SegmentShapes.instance?(i) } &&
+        raw.key?("depth_source") && (raw["depth_source"].nil? || raw["depth_source"].is_a?(String)) &&
+        number?(raw["assumed_hfov_deg"])
+    end
+
+    def initialize(raw)
+      super
+      @width = raw["width"]
+      @height = raw["height"]
+      @prompts = raw["prompts"]
+      @instances = raw["instances"].map { |i| SegmentShapes.instance(i) }.freeze
+      @depth_source = raw["depth_source"]
+      @assumed_hfov_deg = raw["assumed_hfov_deg"]
+    end
+  end
+
   class Reading
     KINDS = {
       "age" => AgeReading,
       "ai_generated" => AiGeneratedReading,
       "face_detection" => FaceDetectionReading,
       "face_recognition" => FaceRecognitionReading,
-      "ocr" => OcrReading
+      "ocr" => OcrReading,
+      "bynn_depth" => DepthReading,
+      "bynn_segment" => SegmentReading
     }.freeze
   end
 end
