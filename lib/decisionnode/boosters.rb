@@ -147,6 +147,11 @@ class DecisionNode
       value.is_a?(Numeric)
     end
 
+    # A whole number of 0 or more: a grid's rows and columns, a picture's sides.
+    def self.count?(value)
+      value.is_a?(Integer) && !value.negative?
+    end
+
     def initialize(raw)
       @raw = raw
       @image = raw.is_a?(Hash) && raw["image"].is_a?(String) ? raw["image"] : nil
@@ -395,10 +400,10 @@ class DecisionNode
         raw["directions"].is_a?(Array) && raw["directions"].size == DIRECTIONS &&
         raw["directions"].all? { |d| d.nil? || number?(d) } &&
         [true, false].include?(raw["ground"]) &&
-        raw["grid_rows"].is_a?(Integer) && raw["grid_cols"].is_a?(Integer) &&
+        count?(raw["grid_rows"]) && count?(raw["grid_cols"]) &&
         raw["grid"].is_a?(Array) && raw["grid"].all? { |row| row.is_a?(Array) && row.all? { |c| number?(c) } } &&
         %w[depth_min depth_max depth_median].all? { |k| number?(raw[k]) } &&
-        raw["width"].is_a?(Integer) && raw["height"].is_a?(Integer)
+        count?(raw["width"]) && count?(raw["height"])
     end
 
     def initialize(raw)
@@ -523,7 +528,7 @@ class DecisionNode
     attr_reader :assumed_hfov_deg
 
     def self.well_formed?(raw)
-      raw["image"].is_a?(String) && raw["width"].is_a?(Integer) && raw["height"].is_a?(Integer) &&
+      raw["image"].is_a?(String) && count?(raw["width"]) && count?(raw["height"]) &&
         raw["prompts"].is_a?(Array) && raw["prompts"].all? { |p| p.is_a?(String) } &&
         raw["instances"].is_a?(Array) && raw["instances"].all? { |i| SegmentShapes.instance?(i) } &&
         (raw["depth_source"].nil? || raw["depth_source"].is_a?(String)) &&

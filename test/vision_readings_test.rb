@@ -90,7 +90,8 @@ class VisionReadingsTest < Minitest::Test
     [
       [["ahead"], "near"], [["directions"], "left"], [["directions"], [1.0] * 6], [["directions"], [1.0] * 8],
       [["directions", 0], "far"],
-      [["ground"], 1], [["grid_rows"], 2.5], [["grid"], [[1.0, "x"]]], [["grid"], [1.0, 2.0]],
+      [["ground"], 1], [["grid_rows"], 2.5], [["grid_rows"], -2], [["grid_cols"], 2.0], [["grid_cols"], -1],
+      [["width"], -810], [["height"], 1080.5], [["height"], -1], [["grid"], [[1.0, "x"]]], [["grid"], [1.0, 2.0]],
       [["depth_median"], nil], [["width"], "810"], [["image"], 3]
     ].each do |path, value|
       raw = changed(DEPTH, path, value)
@@ -153,7 +154,8 @@ class VisionReadingsTest < Minitest::Test
   def test_malformed_segment_is_generic
     [
       [["prompts"], "gate"], [["prompts", 0], 7], [["instances"], { "label" => "gate" }], [["depth_source"], 5],
-      [["assumed_hfov_deg"], "wide"], [["width"], 1280.5], [["instances", 0, "label"], nil],
+      [["assumed_hfov_deg"], "wide"], [["width"], 1280.5], [["width"], -1280], [["height"], -720],
+      [["height"], 720.0], [["instances", 0, "label"], nil],
       [["instances", 0, "box"], [0.1, 0.2, 0.3]], [["instances", 0, "polygon"], [[0.1, 0.2, 0.3]]],
       [["instances", 0, "centroid"], { "x" => 0.5, "y" => 0.5 }], [["instances", 0, "opening"], "hole"],
       [["instances", 0, "opening", "offset"], [0.0]], [["instances", 0, "opening", "area"], :remove],
