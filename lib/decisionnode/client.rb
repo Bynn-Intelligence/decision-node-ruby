@@ -16,10 +16,15 @@ class DecisionNode
   # Seconds for one image PUT to storage, apart from `timeout`: a 10 MB image
   # on a slow uplink needs more than an API call does.
   DEFAULT_UPLOAD_TIMEOUT = 60.0
+  # Seconds for one document PUT to storage: a document is up to 50 MB.
+  DOCUMENT_UPLOAD_TIMEOUT = 120.0
+  # Seconds for one attempt of a document write with `wait: true`, when the
+  # caller set no timeout: the server holds such a call up to 10 s.
+  WAIT_TIMEOUT = 20.0
   # Seconds for one attempt of a decision whose boosters name ocr, when the
   # caller set no timeout: reading text takes longer than a decision does.
   OCR_TIMEOUT = 30.0
-  private_constant :OCR_TIMEOUT
+  private_constant :OCR_TIMEOUT, :WAIT_TIMEOUT
 
   RETRY_STATUSES = ([408, 429] + (500..599).to_a).freeze
   BACKOFF_START = 0.5
@@ -67,7 +72,7 @@ class DecisionNode
   # The Batch API, a DecisionNode::Batches.
   attr_reader :batches
 
-  # Collections of faces, a DecisionNode::Collections.
+  # Collections of faces and knowledge bases, a DecisionNode::Collections.
   attr_reader :collections
 
   # Per-key usage, a DecisionNode::KeyUsage.
@@ -95,8 +100,9 @@ class DecisionNode
   # inline_threshold:: bytes; a request's local images that total less go
   #               inline as base64, at or above it they are uploaded
   #               (default DEFAULT_INLINE_THRESHOLD, 524,288). 0 always uploads.
-  # upload_timeout:: seconds for one image PUT to storage (default 60), apart
-  #               from `timeout`. Must be above 0.
+  # upload_timeout:: seconds for one image PUT to storage (default 60), and for
+  #               one document PUT (default 120), apart from `timeout`. Must be
+  #               above 0.
   # http_client:: a NetHTTPTransport built with your own options, or another
   #               transport with the interface of NetHTTPTransport#call.
   # logger::      a Logger; when given, each attempt is logged at debug level
@@ -113,6 +119,7 @@ class DecisionNode
     @max_retries = max_retries.nil? ? DEFAULT_MAX_RETRIES : checked_max_retries(max_retries)
     @inline_threshold = inline_threshold.nil? ? DEFAULT_INLINE_THRESHOLD : checked_threshold(inline_threshold)
     @upload_timeout = upload_timeout.nil? ? DEFAULT_UPLOAD_TIMEOUT : checked_timeout(upload_timeout, "upload_timeout")
+    @document_upload_timeout = upload_timeout.nil? ? DOCUMENT_UPLOAD_TIMEOUT : @upload_timeout
     @headers = (headers || {}).to_h { |k, v| [k.to_s, v.to_s] }.freeze
     @http = checked_http_client(http_client) || NetHTTPTransport.new
     @logger = logger
@@ -676,13 +683,20 @@ class DecisionNode
   # finishes that attempt and may bill it. Other decisions: no options.
   def ocr_options(boosters)
     list = boosters.is_a?(Array) ? boosters : [boosters]
-    names_ocr = list.any? do |b|
-      b = b.wire if b.is_a?(Booster)
-      b.is_a?(Hash) ? (b["name"] || b[:name]).to_s == "ocr" : (b.is_a?(String) || b.is_a?(Symbol)) && b.to_s == "ocr"
-    end
-    return {} unless names_ocr
+    names_ocr = list.any? { |b| booster_name(b) == "ocr" }
+    # A request naming knowledge keeps the client's timeout: that booster has
+    # its own budget of 800 ms.
+    return {} unless names_ocr && !list.any? { |b| booster_name(b) == "knowledge" }
 
     { policy: :ocr, timeout: @timeout_given ? nil : OCR_TIMEOUT }
+  end
+
+  def booster_name(booster)
+    booster = booster.wire if booster.is_a?(Booster)
+    case booster
+    when Hash then (booster["name"] || booster[:name]).to_s
+    when String, Symbol then booster.to_s
+    end
   end
 
   # The typed answer a helper promises, or a ServerError when it is missing
@@ -924,6 +938,9 @@ class DecisionNode
     # An enrollment with no price set: a retry never cures it, and the API
     # sends no Retry-After for it.
     return false if error.status == 529 && error.details&.dig("reason") == "enrollment_unpriced"
+    # Knowledge whose documents wait on ingestion: an outage of ingestion,
+    # so the caller decides.
+    return false if error.status == 529 && error.details&.dig("reason") == "ingestion_delayed"
     # A key past its daily spend cap: its Retry-After runs to the cap's reset
     # at 00:00 UTC, so it is raised at once.
     return false if error.status == 429 && error.error_type == "key_spend_cap_reached"
@@ -1061,7 +1078,8 @@ class DecisionNode
       end
     when 404 then NotFoundError.new(message, **kw)
     when 413 then RequestTooLargeError.new(message, **kw)
-    when 422 then ValidationError.new(message, entries: entries, **kw)
+    # The API's 422 with no list of entries (`invalid_text`) has an empty list.
+    when 422 then ValidationError.new(message, entries: entries || (body.is_a?(Hash) ? [] : nil), **kw)
     when 429
       klass = error_type == "session_limit_exceeded" ? SessionLimitError : RateLimitError
       klass.new(message, retry_after: retry_wait(headers), **kw)

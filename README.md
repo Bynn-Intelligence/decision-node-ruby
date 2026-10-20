@@ -309,6 +309,7 @@ A booster is a specialist model that reads the request's images before the decis
 | `ocr` | Any picture | The picture's text, whole, or what the booster's `prompt` asks for |
 | `bynn_depth` (Depth Vision) | Any picture | How far away things are, in meters: the nearest obstacle straight ahead, seven directions from left to right, and a grid of the picture |
 | `bynn_segment` (Segment Vision) | Any picture | Where the things you name in words are: each one's outline, box and centre, and with depth on, its distance and size in meters |
+| `knowledge` (Knowledge) | The request's state and questions, never a picture | The passages of your own documents that apply to the request, as facts and rules to apply (see Knowledge) |
 
 ```ruby
 d = dn.decide(
@@ -356,6 +357,7 @@ d = dn.decide(
 | `ocr` | `prompt`: the model's instruction, at most 2,000 characters; left out, all the visible text |
 | `bynn_depth` | `grid_size`: the grid's cells per side, 2 to 16 (8) |
 | `bynn_segment` | `prompt` (required): what to find, one phrase as a String or 1 to 4 phrases as an Array, each at most 120 characters; `max_instances`, 1 to 16 (8); `min_score`, 0 to 1 (0.25); `polygon_points`, the points of each outline, 3 to 64 (24); `depth`, distances and sizes in meters (`true`) |
+| `knowledge` | `collection` (required): a knowledge base's id; `query`, `scope`, `match`, `filter`, `top_k`, `max_tokens`, `pinned`, `min_score`, `include_text` (see Knowledge). `DecisionNode.knowledge(collection, ...)` builds it |
 
 ```ruby
 d = dn.decide(
@@ -387,6 +389,7 @@ Boosters go with `decide`, the helpers, `decide_many` and batch requests; sessio
 | `AiGeneratedReading` | `image`, `generated` (the probability that a generator made the picture), `confidence`, `method` (`inference`, read from the pixels, or `c2pa`, when the file's trusted Content Credentials declare it generated or edited by AI), `top_generator` (`name` and `probability` of the likeliest generator when the reading says likely generated; `nil` otherwise, and always on a `c2pa` reading), `c2pa_signer` (who signed the file's Content Credentials when they are trusted, else `nil`), `c2pa` (`"untrusted"` when the file carries Content Credentials that validate but are not trusted, which change nothing in the reading; else `nil`) |
 | `FaceDetectionReading` | `image`, `faces` (how many faces the picture shows; 0 is a reading), `detections` (at most 64, each a `FaceDetection`: `box`, a `FaceBox` with the corners `x1`, `y1`, `x2`, `y2` in the request's units, and `confidence`) |
 | `FaceRecognitionReading` | `image`, `faces` (how many faces were searched), `matches` (best first, each a `FaceMatch`: `box`, `score`, `collection`, `reference`, `name` for a public figure, `label` and `metadata` for your own item, `collection_name`), `collection_name` (your collection's name) |
+| `KnowledgeReading` | One reading, not one per picture: the passages found, with their citations (see Knowledge) |
 | `OcrReading` | `image`, `text` (the reading; empty when the picture shows no text), `truncated` (`true` when the reading was cut at the model's context limit) |
 | `DepthReading` | `image`, `ahead` (meters to the nearest obstacle straight ahead, the floor left out; `nil` when none is found), `directions` (7 entries, left to right, each meters or `nil`), `ground` (whether a floor or ground was found and left out), `grid_rows`, `grid_cols`, `grid` (rows of meters from the top left), `depth_min`, `depth_max`, `depth_median`, `width`, `height` (the picture's size in pixels) |
 | `SegmentReading` | `image`, `width`, `height`, `prompts` (the phrases searched for), `instances` (best first, each a `SegmentInstance`: `label`, `score`, `box` `[x1, y1, x2, y2]`, `polygon` `[[x, y], ...]`, `area`, `centroid` `[x, y]`, `opening` (a `SegmentOpening` for the hole of a gate, a doorway or a ring, or `nil`), `depth` (a `SegmentDepth`: `median`, `opening_median`, `opening_rim_median`) and `size_m` (a `SegmentSize` in meters: `width`, `height`, `opening`), both `nil` with depth off), `depth_source`, `assumed_hfov_deg`. Coordinates are fractions of the picture from its top left |
@@ -497,6 +500,144 @@ dn.collections.update_item(staff["id"], item["id"], metadata: { "desk" => 7 }) #
 | `delete_item(id, item_id)` | removes one item |
 
 A reference is 1 to 64 of `A-Z a-z 0-9 _ . : -`, a label 1 to 128 characters, and metadata a Hash of at most 20 keys of 1 to 40 of `a-z 0-9 _`, each value a text of at most 500 characters, a number, true or false. They are checked before sending, with the API's `ValidationError` or `BadRequestError`. `create`, `enroll` and `update_item` send an `Idempotency-Key`, a new UUID for each call and the same on every attempt of it, so the API acts and bills once however often the call is tried. They retry like every call, and also on a 409 `idempotency_in_progress` after its `Retry-After`; a 409 `idempotency_key_reused` is raised.
+
+## Knowledge
+
+A knowledge base holds your workspace's own documents: a claims policy, house rules, a mission's special instructions. The `knowledge` booster finds the passages that apply to a request and gives them to the decision as facts and rules to apply, with citations back to each document. A knowledge base is a collection of type `text`, under `dn.collections` with the face collections, and every call returns the API's answer as sent, a Hash with the API's field names.
+
+### 1. Create a knowledge base
+
+```ruby
+kb = dn.collections.create(name: "Claims policy", type: "text", scope_key: "mission")
+kb["id"] # => "col_3f6c..."
+```
+
+`scope_key` is optional, 1 to 40 of `a-z 0-9 _`, and fixed for the knowledge base's life. It names the one metadata key whose value scopes a document to, say, one mission (step 3).
+
+### 2. Add documents
+
+```ruby
+policy = DecisionNode::Document.new(text: <<~MD)
+  # Receipts
+
+  Reject any claim over 500 SEK without a receipt.
+MD
+dn.collections.add_document(kb["id"], document: policy, title: "Claims policy 2026", reference: "policy-2026")
+
+item = dn.collections.add_document(kb["id"], document: DecisionNode::Document.new(path: "handbook.pdf"))
+item["status"] # => "queued"
+```
+
+| `DecisionNode::Document` | What it is |
+|---|---|
+| `Document.new(text:, format: nil)` | Text in memory, `format` `"markdown"` (the API's default) or `"text"`. A text needs a `title:` |
+| `Document.new(path:, content_type: nil, filename: nil)` | A local file, read when the call is made |
+| `Document.new(data:, content_type: nil, filename: nil)` | The file's bytes |
+| `Document.new(io:, content_type: nil, filename: nil)` | An IO, read to its end once, into memory, before anything is sent |
+| `Document.new(upload_id:)` | A file uploaded before with `dn.upload_documents` |
+
+A file's type comes from `content_type`, else from its name's extension, else from its first bytes (PDF, PNG, JPEG, TIFF, WebP); DOCX, PPTX, XLSX and text need a `content_type` or a file name. A file's title is its name without the extension unless you give `title:`. A text, and a text or Markdown file under the client's `inline_threshold` (512 KiB) that is UTF-8, go inline in one call; every other file is uploaded first (one presign and one PUT, 120 seconds per attempt or the client's `upload_timeout:`) and named by its upload id. `dn.upload_documents([doc, ...])` uploads 1 to 16 documents ahead of time and returns their upload ids, each usable for an hour.
+
+PDF, DOCX, PPTX, XLSX, HTML and pictures are converted to text. Only the text is kept: the original file is deleted once its text is ready.
+
+Ingestion is asynchronous: a document is `queued`, then `processing` (`stage` `extracting` for a converted file, `chunking`, `embedding`), then `ready` or `failed`, whose `error` says why. Wait for it in the call, or after:
+
+```ruby
+dn.collections.add_document(kb["id"], document: policy, title: "Claims policy 2026", wait: true) # up to 10 s on the server
+dn.collections.wait_until_ready(kb["id"], item["id"])          # the item, ready or failed
+dn.collections.wait_until_ready(kb["id"], timeout: 600)        # the knowledge base, once nothing is queued or processing
+```
+
+`wait: true` holds the call on the server up to 10 seconds and answers once the document is ready, else as it stands; such a call waits 20 seconds per attempt unless you set the client's `timeout:`. `wait_until_ready` reads at once, then every `poll_interval:` seconds (default 1, half as long again after each read, at most 10), and raises `DecisionNode::TimeoutError` past `timeout:` seconds (default 300).
+
+### 3. Pin rules and scope documents
+
+A rule that must always apply is pinned: a pinned document is given to every request that names the knowledge base, before any passage found by search. A document whose metadata holds the scope key's value is seen only by requests that name that value; a document without it is global.
+
+```ruby
+dn.collections.add_document(kb["id"], document: DecisionNode::Document.new(text: "Never approve a claim over 10,000 SEK."),
+                                      title: "Hard limit", pinned: true, pin_rank: 0)
+dn.collections.add_document(kb["id"], document: DecisionNode::Document.new(path: "m42-brief.md"),
+                                      metadata: { "mission" => "M-42" })
+dn.collections.update_item(kb["id"], item["id"], pinned: true)  # applied at once, never billed again
+```
+
+### 4. Decide with knowledge
+
+```ruby
+d = dn.decide(
+  state: { claim: { amount: "740.00", receipt: false }, mission: "M-42" },
+  questions: { approve: DecisionNode.truth("Should the claim be approved under our policy?") },
+  boosters: [DecisionNode.knowledge(kb["id"], scope: "M-42", require: true)]
+)
+
+reading = d.evidence["knowledge"].results.first # a DecisionNode::KnowledgeReading
+reading.passages.each do |p|
+  puts [p.n, p.pinned, p.title, p.heading, p.score].inspect
+end
+
+p = reading.passages.first
+text = dn.collections.get_item(kb["id"], p.item, include_text: true)["text"]
+text.byteslice(p.byte_start, p.byte_end - p.byte_start) # the passage, cited
+```
+
+`DecisionNode.knowledge(collection, query:, scope:, match:, filter:, top_k:, max_tokens:, pinned:, min_score:, include_text:, require:)` builds the booster; each option is sent only when given, as given, and the API checks them. `collection` is required; `scope` names the scope key's value; `match` and `filter` select documents by metadata; `top_k` is the most passages found by search (4 by default; 0 gives the pins only); `max_tokens` is the passages' budget (`"auto"` or 128 to 8,192); `pinned: false` leaves the pins out; `min_score` is a floor for passages found by meaning; `include_text: true` adds each passage's text (a full-scope key). `require: true` fails the request when the reading did not run. The booster reads no picture and goes with `decide`, the helpers, `decide_many` and batch requests.
+
+| Class | Fields |
+|---|---|
+| `KnowledgeReading` | `collection`, `collection_name`, `corpus` (`{"version"}`), `query` (`{"source", "tokens", "text"}`), `budget` (`{"mode", "tokens", "entry", "cause"}`), `scope` (`{"key", "value"}`), `warnings` (`scope_not_named`, `over_budget`, `budget_floor`, `pinned_filtered`), `passages`, `omitted` (counts by cause), `pending_items`, `search`, `truncated` |
+| `KnowledgePassage` | `n` (its number in the block), `pinned`, `item`, `chunk`, `byte_start`, `byte_end`, `reference`, `title`, `heading`, `tokens`, `score` (`nil` for a pin), `lexical`, `rendered`, `text` |
+
+`byte_start` and `byte_end` are UTF-8 byte offsets into the document's stored text, end exclusive: slice with `byteslice`, as above. A publishable key's reading has `collection_name`, `reference`, `title` and `heading` `nil`. A reading with a field missing or of the wrong type is an `UnknownReading` holding its raw fields, and the decision still parses.
+
+### 5. Search without a decision
+
+```ruby
+found = dn.collections.search(kb["id"], query: "claims without a receipt", scope: "M-42", top_k: 3)
+found.passages.map(&:text)
+```
+
+`search` takes the booster's options and returns a `KnowledgeReading` with every passage's text. It is billed as one knowledge call and needs a full-scope key.
+
+### 6. Errors
+
+| Status | `error_type` | Error | When |
+|---|---|---|---|
+| 409 | `knowledge_collection_empty` | `DecisionNodeError` | `require: true` on a knowledge base with nothing ready and nothing pending: `details["items"]`, `details["failed"]` |
+| 529 | `booster_unavailable` | `OverloadedError` | `require: true` while no document is ready yet but some are being ingested: retried after its `Retry-After` (5 s). With `details["reason"]` `ingestion_delayed` (`Retry-After` 60 s) it is raised at once, never retried: ingestion is delayed and you decide when to try again |
+| 429 | `rate_limit_error` | `RateLimitError` | The workspace's ingestion rate: `details["reason"]` `ingest_queue_full` or `ingest_tokens_per_hour`; retried after its `Retry-After` |
+| 413 | `item_too_large` | `RequestTooLargeError` | A text over 512 KiB once normalised |
+| 422 | `invalid_text` | `ValidationError` | A text that is not UTF-8 or holds a NUL; `entries` is empty |
+| 409 | `reference_taken`, `pinned_budget_exceeded`, `chunks_limit_reached` | `DecisionNodeError` | The reference is another document's (`details["item_id"]`), the pinned documents are over their budget, the workspace's chunks are used up |
+| 400 | `collection_type_mismatch` | `BadRequestError` | A face collection named by `knowledge` or `search` |
+| 400 | `upload_purpose_mismatch` | `BadRequestError` | An image upload named as a document, or a document upload named as an image |
+| 403 | `key_scope_denied` | `PermissionDeniedError` | `search`, `include_text` or a document upload from a key that is not full-scope |
+
+### 7. Files and limits
+
+| What | Limit |
+|---|---|
+| File types | Text, Markdown, PDF, DOCX, PPTX, XLSX, HTML, PNG, JPEG, TIFF, WebP |
+| A file | 50 MB; a PDF 100 pages |
+| A document's text | 512 KiB once extracted and normalised |
+| `title` | 1 to 200 characters |
+| `pin_rank` | 0 to 1,000 |
+
+The title, `pin_rank`, a text's format, an empty text, the reference, the label, the metadata, the scope key, a file's size and type, and the paging of `list_items` and `list_chunks` are checked before sending, with the API's `ValidationError` or `BadRequestError`.
+
+| Call | Sends |
+|---|---|
+| `create(name:, type: "text", scope_key: nil)` | `POST /v1/collections` |
+| `add_document(id, document:, title:, reference:, pinned:, pin_rank:, label:, metadata:, wait: false)` | `POST /v1/collections/{id}/items` |
+| `replace_document(id, item_id, document:, ...)` | `PUT`: a new version, the old one serving until it is ready; the same text again changes nothing |
+| `update_item(id, item_id, reference:, label:, metadata:, pinned:, pin_rank:, title:)` | `PATCH` with only the fields given; a new title makes a new version |
+| `get_item(id, item_id, include_text: false)` | `GET`, with the stored text when asked |
+| `list_items(id, ...)`, `list_chunks(id, item_id, offset:, limit:)` | One page of documents (never their text), one page of a document's chunks |
+| `delete_item(id, item_id)`, `delete_failed_items(id)`, `delete(id)` | One document; every failed document; the knowledge base (`{"deleted" => true}`, or `{"status" => "purging"}` while it finishes) |
+| `wait_until_ready(id, item_id = nil, timeout: 300, poll_interval: 1)` | Reads until ready |
+| `search(id, query:, ...)` | `POST /v1/collections/{id}/search` |
+
+`add_document`, `replace_document` and `update_item` send an `Idempotency-Key`, the same on every attempt of a call. A knowledge call costs USD 0.001, one a request whatever it retrieves, with ingestion and storage on the [pricing page](https://decisionnode.com/docs/pricing#boosters).
 
 ## Device keys
 

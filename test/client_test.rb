@@ -206,7 +206,7 @@ class ClientTest < Minitest::Test
   end
 
   def test_spec_version_and_user_agent
-    assert_equal "1.3", DecisionNode::SPEC_VERSION
+    assert_equal "1.4", DecisionNode::SPEC_VERSION
     assert_equal 524_288, DecisionNode::DEFAULT_INLINE_THRESHOLD
     http = FakeHTTP.new(FakeHTTP.json(200, truth_body))
     client(http).decide(questions: { "q" => DecisionNode.truth("?") })

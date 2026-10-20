@@ -178,8 +178,8 @@ class CollectionsTest < Minitest::Test
   def test_create_checks_type_and_name
     http = FakeHTTP.new(FakeHTTP.json(201, collection))
     dn = client(http)
-    assert_entries([{ "type" => "literal_error", "loc" => %w[body type], "msg" => "Input should be 'face'", "input" => "car",
-                      "ctx" => { "expected" => "'face'" } }]) { dn.collections.create(name: "Staff", type: "car") }
+    assert_entries([{ "type" => "literal_error", "loc" => %w[body type], "msg" => "Input should be 'face' or 'text'",
+                      "input" => "car", "ctx" => { "expected" => "'face' or 'text'" } }]) { dn.collections.create(name: "Staff", type: "car") }
     assert_entries([{ "type" => "string_too_short", "loc" => %w[body name], "msg" => "String should have at least 1 character",
                       "input" => "", "ctx" => { "min_length" => 1 } }]) { dn.collections.create(name: "") }
     assert_entries([{ "type" => "string_too_long", "loc" => %w[body name], "msg" => "String should have at most 80 characters",
@@ -193,8 +193,8 @@ class CollectionsTest < Minitest::Test
                       "input" => nil }]) { dn.collections.create(name: { "a" => 1 }) }
     assert_entries([{ "type" => "string_type", "loc" => %w[body name], "msg" => "Input should be a valid string",
                       "input" => 7 }]) { dn.collections.create(name: 7) }
-    assert_entries([{ "type" => "literal_error", "loc" => %w[body type], "msg" => "Input should be 'face'",
-                      "input" => "#{"t" * 64}...", "ctx" => { "expected" => "'face'" } }]) do
+    assert_entries([{ "type" => "literal_error", "loc" => %w[body type], "msg" => "Input should be 'face' or 'text'",
+                      "input" => "#{"t" * 64}...", "ctx" => { "expected" => "'face' or 'text'" } }]) do
       dn.collections.create(name: "Staff", type: "t" * 70)
     end
     assert_equal collection, dn.collections.create(name: "n" * 80)

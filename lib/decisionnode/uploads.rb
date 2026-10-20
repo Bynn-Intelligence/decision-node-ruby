@@ -100,7 +100,68 @@ class DecisionNode
       ids
     end
 
+    # Uploads 1 to 16 documents for knowledge bases, whatever their type and
+    # size, and returns one upload id each, in order, for a later
+    # `Document.new(upload_id: id)`. A text document is uploaded as
+    # text/markdown, or text/plain for format "text". A document given by its
+    # upload id raises ArgumentError. Each file is checked before anything is
+    # sent, as the API checks it (at most 52,428,800 bytes, not empty, one of
+    # Document::CONTENT_TYPES), and nothing is cached: an upload is consumed by
+    # the item it makes. An upload not named within its hour expires.
+    def upload_documents(documents)
+      raise ArgumentError, "documents must be an Array of DecisionNode::Document" unless documents.is_a?(Array)
+
+      documents.each do |doc|
+        next if doc.is_a?(Document) && !doc.upload_id
+
+        raise ArgumentError, "upload_documents takes documents made from a text, a path, bytes or an IO"
+      end
+      unless documents.size.between?(1, Checks::MAX_IMAGES)
+        raise BadRequestError.new("files: 1 to #{Checks::MAX_IMAGES} files, got #{documents.size}.",
+                                  error_type: "api_usage_error")
+      end
+
+      upload_knowledge(documents.each_with_index.map { |doc, i| document_file(doc, i) })
+    end
+
     private
+
+    # A document's bytes as a knowledge file: a text as its UTF-8 bytes,
+    # typed by its format.
+    def document_file(doc, index)
+      return doc.load(index) unless doc.text?
+
+      unless doc.format.nil? || Document::FORMATS.include?(doc.format)
+        raise Checks.invalid([Checks.entry("literal_error", %w[body format], "Input should be 'markdown' or 'text'",
+                                           doc.format)])
+      end
+      type = doc.format == "text" ? "text/plain" : "text/markdown"
+      Document.new(data: doc.text.encode(Encoding::UTF_8), content_type: type).load(index)
+    end
+
+    # One presign for the files with the knowledge purpose, then one PUT each
+    # (in parallel), each with the document timeout. Returns the upload ids.
+    def upload_knowledge(loaded)
+      files = loaded.map do |f|
+        file = { "purpose" => "knowledge", "content_type" => f.content_type, "byte_size" => f.data.bytesize,
+                 "checksum" => [f.md5].pack("m0"), "sha256" => [f.sha256].pack("m0") }
+        file["filename"] = f.filename unless f.filename.nil?
+        file
+      end
+      targets, valid_until = presign(files)
+      if targets.size != loaded.size
+        raise ServerError.new("the upload answer holds #{targets.size} uploads for #{loaded.size} files")
+      end
+
+      put_all(loaded, files, targets, valid_until, timeout: @document_upload_timeout)
+      targets.map { |t| t["upload_id"] }
+    end
+
+    # The per-attempt timeout of a document write: 20 s with `wait` unless
+    # the caller set one; nil (the client's) otherwise.
+    def write_timeout(wait)
+      wait && !@timeout_given ? WAIT_TIMEOUT : nil
+    end
 
     def cache_key(img)
       [img.sha256, img.media_type]
@@ -267,16 +328,16 @@ class DecisionNode
 
     # The PUTs, in parallel when there are several. The first failure is raised
     # once every PUT has ended.
-    def put_all(images, files, targets, valid_until)
+    def put_all(images, files, targets, valid_until, timeout: @upload_timeout)
       if images.size == 1
-        put_object(images[0], files[0], targets[0], valid_until)
+        put_object(images[0], files[0], targets[0], valid_until, timeout: timeout)
         return
       end
 
       errors = Array.new(images.size)
       threads = images.each_index.map do |i|
         Thread.new do
-          put_object(images[i], files[i], targets[i], valid_until)
+          put_object(images[i], files[i], targets[i], valid_until, timeout: timeout)
         rescue StandardError => e
           errors[i] = e
         end
@@ -292,14 +353,15 @@ class DecisionNode
     # Retried on 5xx and connection errors as an API call is; a 412 on a retry
     # means an earlier attempt stored the object; a 403 after the URL's time
     # is up presigns again, once. On success `target` names the stored upload.
-    def put_object(image, file, target, valid_until, represigned: false)
+    # A document's PUT has its own timeout.
+    def put_object(image, file, target, valid_until, represigned: false, timeout: @upload_timeout)
       url = target["url"]
       headers = (target["headers"] || {}).to_h { |k, v| [k.to_s, v.to_s] }
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       attempt = 0
       loop do
         response = begin
-          attempt_once("PUT", url, headers, image.data, timeout: @upload_timeout)
+          attempt_once("PUT", url, headers, image.data, timeout: timeout)
         rescue TimeoutError, ConnectionError => e
           log("PUT", "storage", e.class.name.split("::").last, nil, started, attempt)
           raise if attempt >= @max_retries
@@ -319,7 +381,7 @@ class DecisionNode
         end
         if status == 403 && !represigned && @clock.call >= valid_until
           fresh, fresh_until = presign([file])
-          put_object(image, file, fresh.first, fresh_until, represigned: true)
+          put_object(image, file, fresh.first, fresh_until, represigned: true, timeout: timeout)
           target.replace(fresh.first)
           return
         end

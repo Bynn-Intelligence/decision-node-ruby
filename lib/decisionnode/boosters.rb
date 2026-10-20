@@ -56,6 +56,42 @@ class DecisionNode
     def inspect
       "#<#{self.class.name} #{name.inspect}>"
     end
+
+    KNOWLEDGE_OPTIONS = %i[query scope match filter top_k max_tokens pinned min_score include_text].freeze
+    private_constant :KNOWLEDGE_OPTIONS
+
+    # The `knowledge` booster, reading the passages of one knowledge base that
+    # apply to the request:
+    #
+    #   DecisionNode.knowledge("col_...", scope: "M-42", require: true)
+    #
+    # collection::    the knowledge base's `col_` id (required).
+    # query::         replaces the query built from the questions and the state.
+    # scope::         the value of the knowledge base's scope key.
+    # match, filter:: metadata conditions, JSON values sent as given.
+    # top_k::         the most retrieved passages, pins not counted; 0 reads the pins only.
+    # max_tokens::    the passages' token budget, an Integer or "auto".
+    # pinned::        false leaves the pinned documents out.
+    # min_score::     a similarity floor for passages found by meaning alone.
+    # include_text::  true adds each passage's text to the reading (a full-scope key).
+    # require::       true: a reading that did not run fails the request.
+    #
+    # Each option is sent only when given, as given; none is checked here.
+    def self.knowledge(collection, require: false, **options)
+      unknown = options.keys - KNOWLEDGE_OPTIONS
+      raise ArgumentError, "unknown knowledge option(s) #{unknown.join(', ')}" unless unknown.empty?
+
+      wire = { "collection" => collection }
+      KNOWLEDGE_OPTIONS.each { |k| wire[k.to_s] = options[k] unless options[k].nil? }
+      new("knowledge", require: require == true ? true : nil, options: wire)
+    end
+  end
+
+  class << self
+    # See Booster.knowledge.
+    def knowledge(collection, require: false, **options)
+      Booster.knowledge(collection, require: require, **options)
+    end
   end
 
   # The status and time of one booster on a request, from the
@@ -150,6 +186,11 @@ class DecisionNode
     # A whole number of 0 or more: a grid's rows and columns, a picture's sides.
     def self.count?(value)
       value.is_a?(Integer) && !value.negative?
+    end
+
+    # Absent (nil) or of the class given.
+    def self.optional?(value, klass)
+      value.nil? || value.is_a?(klass)
     end
 
     def initialize(raw)
@@ -546,6 +587,96 @@ class DecisionNode
     end
   end
 
+  # One passage of a KnowledgeReading, in the order the model saw them
+  # (pinned first). `n` is its number in the block; `item` and `chunk` cite
+  # where it comes from, and `byte_start` to `byte_end` (end exclusive) are
+  # UTF-8 byte offsets into the item's stored text, as
+  # `collections.get_item(..., include_text: true)` returns it. `reference`,
+  # `title` and `heading` are nil for a publishable key's reading. `score` is
+  # the similarity (4 decimals), nil for a pin. `rendered` is false when the
+  # passage was left out to fit, and nil on a search's passages. `text` is
+  # there only with `include_text`, and always on a search. Every value is as
+  # sent.
+  class KnowledgePassage
+    attr_reader :n, :pinned, :item, :chunk, :byte_start, :byte_end, :reference, :title, :heading, :tokens,
+                :score, :lexical, :rendered, :text, :raw
+
+    def self.well_formed?(raw)
+      raw.is_a?(Hash) && raw["n"].is_a?(Integer) && [true, false].include?(raw["pinned"]) &&
+        raw["item"].is_a?(String) && raw["chunk"].is_a?(Integer) &&
+        raw["byte_start"].is_a?(Integer) && raw["byte_end"].is_a?(Integer) &&
+        %w[reference title heading text].all? { |k| Reading.optional?(raw[k], String) } &&
+        Reading.optional?(raw["score"], Numeric) && Reading.optional?(raw["tokens"], Integer) &&
+        %w[lexical rendered].all? { |k| raw[k].nil? || [true, false].include?(raw[k]) }
+    end
+
+    def initialize(raw)
+      @raw = raw
+      %w[n pinned item chunk byte_start byte_end reference title heading tokens score lexical rendered
+         text].each { |k| instance_variable_set(:"@#{k}", raw[k]) }
+    end
+
+    def pinned?
+      @pinned == true
+    end
+
+    # A field of the passage as the server sent it.
+    def [](key)
+      raw[key.to_s]
+    end
+
+    def to_h
+      raw
+    end
+  end
+
+  # A reading of the `knowledge` booster, and the answer of
+  # `collections.search`: the passages found in one knowledge base.
+  #
+  # `corpus` (`{"version"}`), `query` (`{"source", "tokens", "text"}`, the
+  # text only with `include_text` and on a search), `budget` (`{"mode",
+  # "tokens", "entry", "cause"}`), `scope` (`{"key", "value"}`) and `search`
+  # (`{"plan", "candidates", "fallback"}`) are Hashes as sent, nil when
+  # absent; `omitted` is the count of passages left out by cause, as sent.
+  class KnowledgeReading < Reading
+    # The knowledge base's id.
+    attr_reader :collection
+    # Its name, or nil (always for a publishable key's reading).
+    attr_reader :collection_name
+    attr_reader :corpus, :query, :budget, :scope, :search, :omitted
+    # Strings such as "scope_not_named", "over_budget", "budget_floor" and
+    # "pinned_filtered"; empty when there are none.
+    attr_reader :warnings
+    # Each a KnowledgePassage, in the order sent.
+    attr_reader :passages
+    # Items not ready yet.
+    attr_reader :pending_items
+    # true when a passage was dropped to fit the model's context; nil on a
+    # search's answer, which has none.
+    attr_reader :truncated
+
+    def self.well_formed?(raw)
+      warnings = raw["warnings"]
+      raw["collection"].is_a?(String) && raw["passages"].is_a?(Array) &&
+        raw["passages"].all? { |p| KnowledgePassage.well_formed?(p) } &&
+        optional?(raw["collection_name"], String) && optional?(raw["pending_items"], Integer) &&
+        (raw["truncated"].nil? || [true, false].include?(raw["truncated"])) &&
+        (warnings.nil? || (warnings.is_a?(Array) && warnings.all?(String))) &&
+        %w[corpus query budget scope omitted search].all? { |k| optional?(raw[k], Hash) }
+    end
+
+    def initialize(raw)
+      super
+      @collection = raw["collection"]
+      @collection_name = raw["collection_name"]
+      %w[corpus query budget scope search omitted pending_items truncated].each do |k|
+        instance_variable_set(:"@#{k}", raw[k])
+      end
+      @warnings = raw["warnings"].is_a?(Array) ? raw["warnings"] : []
+      @passages = raw["passages"].map { |p| KnowledgePassage.new(p) }.freeze
+    end
+  end
+
   class Reading
     KINDS = {
       "age" => AgeReading,
@@ -554,7 +685,8 @@ class DecisionNode
       "face_recognition" => FaceRecognitionReading,
       "ocr" => OcrReading,
       "bynn_depth" => DepthReading,
-      "bynn_segment" => SegmentReading
+      "bynn_segment" => SegmentReading,
+      "knowledge" => KnowledgeReading
     }.freeze
   end
 end

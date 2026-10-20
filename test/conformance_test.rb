@@ -12,6 +12,7 @@ require "digest"
 require "json"
 require "net/http"
 require "securerandom"
+require "stringio"
 require "decisionnode"
 
 module Conformance
@@ -244,6 +245,10 @@ module Conformance
   DEPTH_FIELDS = %w[image ahead directions ground grid_rows grid_cols grid depth_min depth_max depth_median width height].freeze
   SEGMENT_FIELDS = %w[image width height prompts depth_source assumed_hfov_deg].freeze
   AI_GENERATED_FIELDS = %w[image generated confidence method c2pa_signer].freeze
+  KNOWLEDGE_FIELDS = %w[collection collection_name corpus query budget scope warnings omitted pending_items search
+                        truncated].freeze
+  PASSAGE_FIELDS = %w[n pinned item reference title heading chunk byte_start byte_end tokens score lexical rendered
+                      text].freeze
 
   def norm_reading(reading)
     case reading
@@ -271,6 +276,10 @@ module Conformance
     when DecisionNode::SegmentReading
       SEGMENT_FIELDS.to_h { |k| [k, reading.public_send(k)] }
                     .merge("kind" => "bynn_segment", "instances" => reading.instances.map { |i| norm_instance(i) })
+    when DecisionNode::KnowledgeReading
+      KNOWLEDGE_FIELDS.to_h { |k| [k, reading.public_send(k)] }
+                      .merge("kind" => "knowledge",
+                             "passages" => reading.passages.map { |p| PASSAGE_FIELDS.to_h { |k| [k, p.public_send(k)] } })
     when DecisionNode::UnknownReading
       { "kind" => "unknown", "raw" => reading.raw }
     else
@@ -453,6 +462,8 @@ module Conformance
       when "$point" then return DecisionNode.point(args["instructions"], image: args["image"], units: args["units"], max: args["max"])
       when "$box" then return DecisionNode.box(args["instructions"], image: args["image"], units: args["units"], max: args["max"])
       when "$booster" then return booster(args.transform_values { |v| decode(v, ctx) })
+      when "$knowledge" then return knowledge(args.transform_values { |v| decode(v, ctx) })
+      when "$document" then return document(args.transform_values { |v| decode(v, ctx) })
       when "$image" then return image(args.transform_values { |v| decode(v, ctx) })
       when "$video" then return video(args, ctx)
       when "$frame" then return frame(args)
@@ -492,6 +503,34 @@ module Conformance
   def booster(args)
     kw = args.slice("images", "require", "options").to_h { |k, v| [k.to_sym, v] }
     DecisionNode::Booster.new(args["name"], **kw)
+  end
+
+  # knowledge(collection, ...) (suite 1.23): each option only when the case gives it.
+  def knowledge(args)
+    DecisionNode.knowledge(args["collection"], **args.except("collection").to_h { |k, v| [k.to_sym, v] })
+  end
+
+  # Document(...) (suite 1.23): text, a file by path, bytes (data_base64, data_text as
+  # UTF-8, repeat_text) or a stream (stream_base64), or an upload_id; pad_to as for an
+  # image, a path with pad_to passed as bytes with its file name.
+  def document(args)
+    extra = args.slice("format", "content_type", "filename").to_h { |k, v| [k.to_sym, v] }
+    return DecisionNode::Document.new(text: args["text"], **extra) if args.key?("text")
+    return DecisionNode::Document.new(upload_id: args["upload_id"]) if args.key?("upload_id")
+    return DecisionNode::Document.new(path: File.join(ROOT, args["path"]), **extra) if args.key?("path") && !args.key?("pad_to")
+
+    data =
+      if args.key?("data_text") then args["data_text"].encode(Encoding::UTF_8).b
+      elsif args.key?("repeat_text") then (args["repeat_text"]["repeat"] * args["repeat_text"]["times"]).encode(Encoding::UTF_8).b
+      elsif args.key?("path")
+        extra[:filename] ||= File.basename(args["path"])
+        File.binread(File.join(ROOT, args["path"]))
+      else (args["data_base64"] || args["stream_base64"]).unpack1("m")
+      end
+    data += "\0".b * [0, args["pad_to"] - data.bytesize].max if args.key?("pad_to")
+    return DecisionNode::Document.new(io: StringIO.new(data), **extra) if args.key?("stream_base64")
+
+    DecisionNode::Document.new(data: data, **extra)
   end
 
   # Video(id, frames, fps, start, end): fps, start and end only when the case gives them.
@@ -539,6 +578,7 @@ module Conformance
     case method
     when "models" then client.models
     when "upload" then client.upload(args["images"])
+    when "upload_documents" then client.upload_documents(args["documents"])
     when "decide_many"
       kw = args.key?("concurrency") ? { concurrency: args["concurrency"] } : {}
       client.decide_many(args["requests"], **kw)
@@ -581,7 +621,7 @@ module Conformance
 
   # The collections, usage and keys calls' results, the API's objects as sent;
   # "collections", "usage_items" and "api_keys" are lists.
-  COLLECTION_KINDS = %w[collection collections item item_page deleted key_usage usage_page usage_items
+  COLLECTION_KINDS = %w[collection collections item item_page chunk_page deleted key_usage usage_page usage_items
                         created_key api_key key_page api_keys key_revoked keys_revoked].freeze
   LIST_KINDS = %w[collections usage_items api_keys].freeze
 
@@ -903,9 +943,18 @@ module Conformance
       match!(exp["session"], norm_session(result), "session")
     elsif exp.key?("upload_ids")
       raise Fail, "upload_ids: expected #{exp['upload_ids']}, got #{result}" unless same?(exp["upload_ids"], result.to_a)
+    elsif exp.key?("knowledge")
+      check_knowledge!(exp["knowledge"], result, "knowledge")
     elsif (kind = COLLECTION_KINDS.find { |k| exp.key?(k) })
       check_collection_result!(kind, exp[kind], result, kind)
     end
+  end
+
+  # A search's answer (suite 1.23), a KnowledgeReading.
+  def check_knowledge!(expected, result, path)
+    raise Fail, "#{path}: expected a KnowledgeReading, got #{result.class}" unless result.is_a?(DecisionNode::KnowledgeReading)
+
+    match!(expected, norm_reading(result), path)
   end
 
   # ---- errors
@@ -966,6 +1015,7 @@ module Conformance
 
       match_batch!(spec.fetch("batch", {}), result, "#{path}.batch")
     when "batch_page" then match!(spec.fetch("batch_page", {}), result.to_h, "#{path}.batch_page")
+    when "knowledge" then check_knowledge!(spec.fetch("knowledge", {}), result, "#{path}.knowledge")
     when *COLLECTION_KINDS then check_collection_result!(spec["result"], spec.fetch(spec["result"], {}), result, "#{path}.#{spec['result']}")
     when "batch_results" then check_results_spec!(spec, result, path)
     when "batch_run"
