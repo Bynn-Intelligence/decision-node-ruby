@@ -149,18 +149,7 @@ class DecisionNode
                     pin_rank: UNSET, title: UNSET)
       given = { "reference" => reference, "label" => label, "metadata" => metadata, "pinned" => pinned,
                 "pin_rank" => pin_rank, "title" => title }.reject { |_, v| v.equal?(UNSET) }
-      # A document's own field names a knowledge base: its entries are worded as that route words them.
-      text = given.key?("pinned") || given.key?("pin_rank") || given.key?("title")
-      entries = []
-      if text
-        entries.concat(document_entries(given))
-      else
-        if given.key?("reference")
-          entries.concat(string_entries(%w[body reference], reference, 1, REFERENCE_MAX, REFERENCE_RULE))
-        end
-        entries.concat(string_entries(%w[body label], label, 1, LABEL_MAX)) unless label.equal?(UNSET) || label.nil?
-        entries.concat(metadata_entries(metadata)) if given.key?("metadata")
-      end
+      entries = document_entries(given)
       entries << Checks.entry("missing", %w[body], "Send reference, label, metadata or any of them", nil) if given.empty?
       raise Checks.invalid(entries) unless entries.empty?
 
@@ -228,8 +217,8 @@ class DecisionNode
 
     # Deletes every failed document of a knowledge base
     # (`DELETE /v1/collections/{id}/items?status=failed`) and returns the
-    # answer as sent.
-    def delete_failed_items(collection_id)
+    # answer as sent, `{"deleted" => n}`.
+    def delete_failed(collection_id)
       call("DELETE", "/v1/collections/#{segment(collection_id)}/items?status=failed")
     end
 
@@ -339,22 +328,25 @@ class DecisionNode
     def document_write(method, path, document, fields, wait)
       raise ArgumentError, "document must be a DecisionNode::Document, got #{document.class}" unless document.is_a?(Document)
 
+      item = document_entries(fields.slice("reference", "pin_rank", "label", "metadata", "pinned"))
+      title = fields.key?("title") ? document_entries(fields.slice("title")) : nil
       entries = []
-      entries << missing_title if document.text? && !fields.key?("title")
-      if document.text? && !document.format.nil? && !Document::FORMATS.include?(document.format)
-        entries << Checks.entry("literal_error", %w[body format], "Input should be 'markdown' or 'text'",
-                                echoed(document.format))
+      if document.text?
+        entries.concat(title || [missing_title])
+        entries << Checks.entry("string_too_short", %w[body text], "The text is empty", "") if document.text.empty?
+        unless document.format.nil? || Document::FORMATS.include?(document.format)
+          entries << Checks.entry("literal_error", %w[body format], "Input should be 'markdown' or 'text'",
+                                  echoed(document.format))
+        end
+        raise Checks.invalid(entries + item) unless entries.empty? && item.empty?
       end
-      entries.concat(document_entries(fields))
-      entries = entries.each_with_index.sort_by { |e, i| [BODY_ORDER.index(e["loc"][1]) || BODY_ORDER.size, i] }.map(&:first)
-      raise Checks.invalid(entries) unless entries.empty?
-      if document.text? && document.text.empty?
-        raise Checks.invalid([Checks.entry("string_too_short", %w[body text], "The text is empty", "")])
-      end
-
+      # A file's own faults (its type, size) come before the fields'.
       loaded = document.load
       inline = inline_text(loaded)
-      raise Checks.invalid([missing_title]) if inline && !fields.key?("title") && loaded.filename.nil?
+      unless document.text?
+        entries.concat(title || (inline && loaded.filename.nil? ? [missing_title] : []))
+        raise Checks.invalid(entries + item) unless entries.empty? && item.empty?
+      end
 
       path = "#{path}?wait=true" if wait == true
       timeout = @client.__send__(:write_timeout, wait == true)
@@ -374,10 +366,6 @@ class DecisionNode
         end
       end
     end
-
-    # The fields of an item body, in the order the API reads them.
-    BODY_ORDER = %w[title text format reference pinned pin_rank label metadata].freeze
-    private_constant :BODY_ORDER
 
     # A text, or a text or Markdown file whose bytes total under the client's
     # inline threshold and read as UTF-8 without a NUL: the text and its
@@ -406,10 +394,10 @@ class DecisionNode
       Checks.entry("missing", %w[body title], "Field required", nil)
     end
 
-    # The 422 entries of a document's fields, worded as the knowledge base's
-    # route words them: the title (1 to 200 characters once trimmed), the
-    # reference's pattern, `pinned` (true or false), `pin_rank` (an Integer
-    # from 0 to 1,000), the label's length and the metadata.
+    # The 422 entries of a document's fields, in the order given: the title
+    # (1 to 200 characters once trimmed), `pinned` (true or false) and
+    # `pin_rank` (an Integer from 0 to 1,000), and the reference, the label and
+    # the metadata as #enroll checks them.
     def document_entries(fields)
       entries = []
       fields.each do |name, value|
@@ -419,10 +407,7 @@ class DecisionNode
 
           entries << Checks.entry("string_too_long", %w[body title], "A title is 1 to #{TITLE_MAX} characters", echoed(value))
         when "reference"
-          next if value.is_a?(String) && value.match?(REFERENCE_RULE)
-
-          entries << Checks.entry("string_pattern_mismatch", %w[body reference],
-                                  "String should match pattern '#{REFERENCE_PATTERN}'", echoed(value))
+          entries.concat(string_entries(%w[body reference], value, 1, REFERENCE_MAX, REFERENCE_RULE))
         when "pinned"
           next if [true, false].include?(value)
 
@@ -433,11 +418,7 @@ class DecisionNode
           entries << Checks.entry("int_range", %w[body pin_rank], "Input should be an integer from 0 to #{PIN_RANK_MAX}",
                                   echoed(value))
         when "label"
-          next if value.nil? || (value.is_a?(String) && value.length.between?(1, LABEL_MAX))
-
-          entries << Checks.entry("string_too_long", %w[body label],
-                                  "A label is 1 to #{LABEL_MAX} characters with no control or invisible characters",
-                                  echoed(value))
+          entries.concat(string_entries(%w[body label], value, 1, LABEL_MAX)) unless value.nil?
         when "metadata"
           entries.concat(metadata_entries(value))
         end

@@ -213,7 +213,7 @@ class KnowledgeTest < Minitest::Test
     dn.collections.get_item(COL, ITEM)
     dn.collections.list_chunks(COL, ITEM, offset: 20, limit: 10)
     dn.collections.list_chunks(COL, ITEM)
-    dn.collections.delete_failed_items(COL)
+    dn.collections.delete_failed(COL)
     assert_equal [["GET", "/v1/collections/#{COL}/items/#{ITEM}?include=text"],
                   ["GET", "/v1/collections/#{COL}/items/#{ITEM}"],
                   ["GET", "/v1/collections/#{COL}/items/#{ITEM}/chunks?offset=20&limit=10"],
@@ -283,7 +283,7 @@ class KnowledgeTest < Minitest::Test
 
   def assert_local(klass, http = FakeHTTP.new, &block)
     err = assert_raises(klass) { block.call(client(http).collections) }
-    assert_nil err.status
+    assert_nil err.status if err.respond_to?(:status)
     assert_empty http.calls
     err
   end
@@ -305,18 +305,22 @@ class KnowledgeTest < Minitest::Test
     end
     assert_equal "title", err.entries.first["loc"][1]
     err = assert_local(DecisionNode::ValidationError) { |c| c.update_item(COL, ITEM, label: "x" * 129, title: "") }
-    assert_equal "A label is 1 to 128 characters with no control or invisible characters", err.entries[0]["msg"]
+    assert_equal [["String should have at most 128 characters", "label"], ["A title is 1 to 200 characters", "title"]],
+                 err.entries.map { |e| [e["msg"], e["loc"][1]] }
   end
 
   def test_the_file_checks_send_nothing
     err = assert_local(DecisionNode::BadRequestError) do |c|
       c.add_document(COL, document: DecisionNode::Document.new(data: "", filename: "a.pdf"))
     end
-    assert_equal ["api_usage_error", "files[0].byte_size: must be at least 1."], [err.error_type, err.message]
+    assert_equal ["api_usage_error", "files[0].byte_size: must be an integer from 1 to 52428800."],
+                 [err.error_type, err.message]
     err = assert_local(DecisionNode::BadRequestError) do |c|
-      c.add_document(COL, document: DecisionNode::Document.new(data: "PK\x03\x04".b), title: "T")
+      c.add_document(COL, document: DecisionNode::Document.new(data: "PK\x03\x04".b, content_type: "application/zip"), title: "T")
     end
-    assert_equal "files[0].content_type: must be one of #{DecisionNode::Document::CONTENT_TYPES.join(', ')}.", err.message
+    assert_equal "files[0].content_type: must be one of #{DecisionNode::Document::CONTENT_TYPES.join(', ')}, got application/zip.",
+                 err.message
+    assert_local(ArgumentError) { |c| c.add_document(COL, document: DecisionNode::Document.new(data: "PK\x03\x04".b), title: "T") }
     big = StringIO.new("x" * (DecisionNode::Document::MAX_BYTES + 1))
     err = assert_local(DecisionNode::BadRequestError) do |c|
       c.add_document(COL, document: DecisionNode::Document.new(io: big, filename: "a.pdf"))

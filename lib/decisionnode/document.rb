@@ -113,13 +113,18 @@ class DecisionNode
       return Loaded.new(:text, @text, @format) if @text
       return Loaded.new(:upload, nil, nil, nil, nil, nil, @upload_id) if @upload_id
 
-      bytes = read_bytes(index)
+      bytes = read_bytes
+      type = @content_type || self.class.type_of(@filename, bytes)
+      if type.nil?
+        raise ArgumentError, "the document's type cannot be told from its name or its first bytes: give content_type: or filename:"
+      end
+      unless CONTENT_TYPES.include?(type)
+        usage("files[#{index}].content_type: must be one of #{CONTENT_TYPES.join(', ')}, got #{type}.")
+      end
+      usage("files[#{index}].byte_size: must be an integer from 1 to #{MAX_BYTES}.") if bytes.empty?
       if bytes.bytesize > MAX_BYTES
         usage("files[#{index}].byte_size: #{bytes.bytesize} is over the limit of #{MAX_BYTES} bytes.")
       end
-      usage("files[#{index}].byte_size: must be at least 1.") if bytes.empty?
-      type = @content_type || self.class.type_of(@filename, bytes)
-      usage("files[#{index}].content_type: must be one of #{CONTENT_TYPES.join(', ')}.") unless CONTENT_TYPES.include?(type)
 
       Loaded.new(:file, nil, nil, bytes.b.freeze, type, @filename)
     end
@@ -148,25 +153,21 @@ class DecisionNode
 
     private
 
-    def read_bytes(index)
+    # The file's bytes; a path or an IO is read to its end, or to one byte
+    # past the limit, which the size check then refuses.
+    def read_bytes
       return @data if @data
-      return read_io(@io, index) if @io
+      return read_io(@io) if @io
 
-      begin
-        size = File.size(@path)
-        usage("files[#{index}].byte_size: #{size} is over the limit of #{MAX_BYTES} bytes.") if size > MAX_BYTES
-        File.binread(@path)
-      rescue SystemCallError, IOError => e
-        raise ArgumentError, "cannot read #{@path}: #{e.message}"
-      end
+      File.open(@path, "rb") { |f| read_io(f) }
+    rescue SystemCallError, IOError => e
+      raise ArgumentError, "cannot read #{@path}: #{e.message}"
     end
 
-    # An IO read to its end, stopping once it holds more than the limit.
-    def read_io(io, index)
+    def read_io(io)
       out = +"".b
-      while (chunk = io.read(1 << 20))
+      while out.bytesize <= MAX_BYTES && (chunk = io.read([1 << 20, MAX_BYTES + 1 - out.bytesize].min))
         out << chunk.b
-        usage("files[#{index}].byte_size: #{out.bytesize} is over the limit of #{MAX_BYTES} bytes.") if out.bytesize > MAX_BYTES
       end
       out
     end

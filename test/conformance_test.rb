@@ -804,6 +804,19 @@ module Conformance
     raise Fail, "same_header #{name}: #{values.first.inspect} does not match #{pattern}" if pattern && !values.first.match?(Regexp.new(pattern))
   end
 
+  # Exactly `count` matching requests, each with its own value of the header
+  # (an Idempotency-Key per write, suite 1.23).
+  def check_distinct_header!(spec, log)
+    name = spec["name"].downcase
+    hits = log.select do |r|
+      (spec["path_suffix"].nil? || r["path"].end_with?(spec["path_suffix"])) && (spec["method"].nil? || r["method"] == spec["method"])
+    end
+    values = hits.map { |r| (r["headers"] || {}).find { |k, _| k.downcase == name }&.last }
+    return if hits.size == spec["count"] && !values.include?(nil) && values.uniq.size == values.size
+
+    raise Fail, "distinct_header #{name}: expected #{spec['count']} requests each with its own value, got #{values.inspect}"
+  end
+
   def check_request!(exp, got, where)
     raise Fail, "#{where} method: expected #{exp['method']}, got #{got['method']} #{got['path']}" unless got["method"] == exp["method"]
     raise Fail, "#{where} path: expected #{exp['path']}, got #{got['path']}" if exp.key?("path") && got["path"] != exp["path"]
@@ -1226,6 +1239,7 @@ module Conformance
     check_sequence!(exp["request_sequence"], log) if exp.key?("request_sequence")
     check_counts!(exp["request_counts"], log) if exp.key?("request_counts")
     check_same_header!(exp["same_header"], log) if exp.key?("same_header")
+    check_distinct_header!(exp["distinct_header"], log) if exp.key?("distinct_header")
     check_events!(exp["session_events"], events) if exp.key?("session_events")
     in_range!(exp["pongs"], info["pongs"], "pongs") if exp.key?("pongs")
     check_outcome!(exp["outcome"], result, "outcome") if exp.key?("outcome")
