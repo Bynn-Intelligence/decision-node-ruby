@@ -41,13 +41,18 @@ class DecisionNode
     POLL_CAP = 10.0
     POLL_GROWTH = 1.5
     MIN_POLL_INTERVAL = 0.1
+    # list_items' search text, in characters; its orders; and how much of a
+    # wrong order the API's message echoes.
+    Q_MAX = 200
+    SORTS = %w[newest oldest title].freeze
+    SORT_ECHO = 16
     # The value of an argument not given, so a label given as nil is sent as
     # null, which clears it.
     UNSET = Object.new.freeze
     private_constant :NAME_MAX, :REFERENCE_MAX, :LABEL_MAX, :REFERENCE_PATTERN, :REFERENCE_RULE, :ECHO_CHARS,
                      :METADATA_KEYS, :METADATA_KEY_CHARS, :METADATA_TEXT_CHARS, :METADATA_KEY_RULE, :UNSET,
                      :SCOPE_KEY_PATTERN, :SCOPE_KEY_RULE, :TITLE_MAX, :PIN_RANK_MAX, :POLL_CAP, :POLL_GROWTH,
-                     :MIN_POLL_INTERVAL
+                     :MIN_POLL_INTERVAL, :Q_MAX, :SORTS, :SORT_ECHO
 
     def initialize(client)
       @client = client
@@ -276,10 +281,13 @@ class DecisionNode
     end
 
     # One page of a collection's items (`GET /v1/collections/{id}/items`),
-    # with `offset`, `limit`, `reference` (the items of that reference) and
+    # with `offset`, `limit`, `reference` (the items of that reference),
     # `reference_prefix` (the items whose reference starts with it) sent only
-    # when given; `reference` and `reference_prefix` not both.
-    def list_items(collection_id, offset: nil, limit: nil, reference: nil, reference_prefix: nil)
+    # when given; `reference` and `reference_prefix` not both. A knowledge
+    # base also takes `q` (1 to 200 characters, matched without regard to
+    # case against a document's title, file name or reference) and `sort`
+    # ("newest", "oldest" or "title"), each sent only when given.
+    def list_items(collection_id, offset: nil, limit: nil, reference: nil, reference_prefix: nil, q: nil, sort: nil)
       Checks.list!(offset, limit)
       unless reference.nil? || reference_prefix.nil?
         Checks.usage("Send query parameter reference or reference_prefix, not both.")
@@ -294,6 +302,15 @@ class DecisionNode
         reference_query!(name, value)
         query[name] = value
       end
+      sort = sort.to_s if sort.is_a?(Symbol)
+      unless q.nil? || (q.is_a?(String) && q.length.between?(1, Q_MAX))
+        Checks.usage("Query parameter q must be 1 to #{Q_MAX} characters.")
+      end
+      unless sort.nil? || SORTS.include?(sort)
+        Checks.usage("Query parameter sort must be newest, oldest or title, got #{printable(sort.to_s, SORT_ECHO)}.")
+      end
+      query["q"] = q unless q.nil?
+      query["sort"] = sort unless sort.nil?
       path = "/v1/collections/#{segment(collection_id)}/items"
       call("GET", query.empty? ? path : "#{path}?#{query.map { |k, v| "#{k}=#{URI.encode_uri_component(v.to_s)}" }.join('&')}")
     end

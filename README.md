@@ -632,7 +632,7 @@ The title, `pin_rank`, a text's format, an empty text, the reference, the label,
 | `replace_document(id, item_id, document:, ...)` | `PUT`: a new version, the old one serving until it is ready; the same text again changes nothing |
 | `update_item(id, item_id, reference:, label:, metadata:, pinned:, pin_rank:, title:)` | `PATCH` with only the fields given; a new title makes a new version |
 | `get_item(id, item_id, include_text: false)` | `GET`, with the stored text when asked |
-| `list_items(id, ...)`, `list_chunks(id, item_id, offset:, limit:)` | One page of documents (never their text), one page of a document's chunks |
+| `list_items(id, offset:, limit:, reference:, reference_prefix:, q:, sort:)`, `list_chunks(id, item_id, offset:, limit:)` | One page of documents (never their text; `q`, 1 to 200 characters, finds them by title, file name or reference, `sort` is `"newest"`, `"oldest"` or `"title"`), one page of a document's chunks |
 | `delete_item(id, item_id)`, `delete_failed(id)`, `delete(id)` | One document; every failed document (`{"deleted" => n}`); the knowledge base (`{"deleted" => true}`, or `{"status" => "purging"}` while it finishes) |
 | `wait_until_ready(id, item_id = nil, timeout: 300, poll_interval: 1)` | Reads until ready |
 | `search(id, query:, ...)` | `POST /v1/collections/{id}/search` |
@@ -899,7 +899,7 @@ bundle exec rake test
 DECISIONNODE_CONFORMANCE_DIR=/path/to/decision-node-conformance bundle exec rake conformance
 ```
 
-The conformance tests run the language-neutral DecisionNode conformance suite (version 1.25) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
+The conformance tests run the language-neutral DecisionNode conformance suite (version 1.26) against its mock server. They need `DECISIONNODE_CONFORMANCE_DIR`: without it, they fail rather than skip.
 
 This gem implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION`).
 

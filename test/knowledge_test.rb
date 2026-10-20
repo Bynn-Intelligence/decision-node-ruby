@@ -223,6 +223,19 @@ class KnowledgeTest < Minitest::Test
     assert_raises(DecisionNode::BadRequestError) { dn.collections.list_chunks(COL, ITEM, limit: 101) }
   end
 
+  def test_list_items_q_and_sort
+    http = FakeHTTP.new(FakeHTTP.json(200, { "items" => [], "q" => "claims policy", "sort" => "title" }))
+    dn = client(http)
+    page = dn.collections.list_items(COL, limit: 10, q: "claims policy", sort: :title)
+    assert_equal "/v1/collections/#{COL}/items?limit=10&q=claims%20policy&sort=title", path(http.calls.first)
+    assert_equal "title", page["sort"]
+    err = assert_raises(DecisionNode::BadRequestError) { dn.collections.list_items(COL, q: "") }
+    assert_equal "Query parameter q must be 1 to 200 characters.", err.message
+    err = assert_raises(DecisionNode::BadRequestError) { dn.collections.list_items(COL, sort: "alphabetical-by-name") }
+    assert_equal "Query parameter sort must be newest, oldest or title, got alphabetical-by-....", err.message
+    assert_equal 1, http.calls.size
+  end
+
   def test_upload_documents
     api = FakeAPI.new
     ids = client(api).upload_documents([DecisionNode::Document.new(data: PDF, filename: "a.pdf"), text_doc("Plain", format: "text")])
