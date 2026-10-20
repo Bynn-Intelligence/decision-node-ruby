@@ -23,7 +23,7 @@ Implements version 1.4 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERS
 - `DecisionNode::KnowledgeReading` (`collection`, `collection_name`, `corpus`, `query`, `budget`, `scope`, `warnings`, `passages`, `omitted`, `pending_items`, `search`, `truncated`) with each passage a `DecisionNode::KnowledgePassage` (`n`, `pinned`, `item`, `chunk`, `byte_start`, `byte_end`, `reference`, `title`, `heading`, `tokens`, `score`, `lexical`, `rendered`, `text`). A reading or a passage with a field missing or of the wrong type is an `UnknownReading`.
 - Checked before sending, with the API's `ValidationError` or `BadRequestError`: a collection type other than `face` or `text`, the scope key, a document's title, `pin_rank`, `pinned`, format and empty text, and a file's type (one the API takes) and size (1 to 52,428,800 bytes); a file whose type cannot be told from its name or its first bytes raises ArgumentError.
 - The README's Knowledge section: creating a knowledge base, adding documents and waiting for them, pinning and scoping, a decision with knowledge and its citations, search, the errors and the limits.
-- The conformance tests run suite 1.26.
+- The conformance tests run suite 1.27.
 
 ### Changed
 
