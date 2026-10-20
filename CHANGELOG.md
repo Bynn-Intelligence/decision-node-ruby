@@ -4,6 +4,31 @@ All notable changes to this gem are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the gem uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - Unreleased
+
+Implements version 1.4 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.4"`): knowledge.
+
+### Added
+
+- Knowledge bases: `dn.collections.create(name:, type: "text", scope_key:)`, a collection of type `text` holding your own documents, with an optional scope key (1 to 40 of `a-z 0-9 _`, sent only when given). A knowledge base's object (`scope_key`, `chunks`, `tokens`, `version`, `status_counts`, `pinned`) is returned as sent, and `delete` returns `{"deleted" => true}` or `{"status" => "purging"}` as sent.
+- `DecisionNode::Document`: a text (`text:`, `format:` `"markdown"` or `"text"`), a file by `path:`, its bytes (`data:`), an `io:` read to its end once, or an `upload_id:`. A file's type comes from `content_type:`, else its name's extension, else its first bytes (PDF, PNG, JPEG, TIFF, WebP).
+- `collections.add_document(id, document:, title:, reference:, pinned:, pin_rank:, label:, metadata:, wait:)` and `replace_document(id, item_id, document:, ...)`: a text, and a text or Markdown file under the inline threshold that is UTF-8 without a NUL, are sent inline (a file titled by its name without the extension unless `title:` is given); every other file is uploaded with the knowledge purpose (`POST /v1/uploads` with `purpose`, both checksums and the file name; one PUT of 120 seconds per attempt, or the client's `upload_timeout:`) and named by its `upload_id`. Each call sends an `Idempotency-Key`, the same on every attempt; an upload the call made that the API calls stale is uploaded again once, with a new key, while `upload_purpose_mismatch` and an upload id you gave are raised at once. `wait: true` sends `?wait=true` and waits 20 seconds per attempt unless you set `timeout:`.
+- `update_item` takes `pinned:`, `pin_rank:` and `title:` for a document.
+- `collections.get_item(id, item_id, include_text:)`, `list_chunks(id, item_id, offset:, limit:)`, `delete_failed(id)` (`DELETE /v1/collections/{id}/items?status=failed`, answering `{"deleted" => n}`), each returning the answer as sent.
+- `collections.wait_until_ready(id, item_id = nil, timeout: 300, poll_interval: 1)`: reads the item until it is `ready` or `failed` (a failed item is returned, its `error` saying why), or the knowledge base until nothing is queued or processing; the wait grows by half after each read, up to 10 seconds, and `DecisionNode::TimeoutError` is raised past the timeout.
+- `collections.search(id, query:, scope:, match:, filter:, top_k:, pinned:, max_tokens:)`, each option sent only when given, returning a `KnowledgeReading` with every passage's text.
+- `dn.upload_documents(documents)`: 1 to 16 documents uploaded ahead of time, one upload id each.
+- The `knowledge` booster: `DecisionNode.knowledge(collection, query:, scope:, match:, filter:, top_k:, max_tokens:, pinned:, min_score:, include_text:, require:)`, each option sent only when given and `require` only when true. A request naming knowledge never takes the 30-second `ocr` timeout.
+- `DecisionNode::KnowledgeReading` (`collection`, `collection_name`, `corpus`, `query`, `budget`, `scope`, `warnings`, `passages`, `omitted`, `pending_items`, `search`, `truncated`) with each passage a `DecisionNode::KnowledgePassage` (`n`, `pinned`, `item`, `chunk`, `byte_start`, `byte_end`, `reference`, `title`, `heading`, `tokens`, `score`, `lexical`, `rendered`, `text`). A reading or a passage with a field missing or of the wrong type is an `UnknownReading`.
+- Checked before sending, with the API's `ValidationError` or `BadRequestError`: a collection type other than `face` or `text`, the scope key, a document's title, `pin_rank`, `pinned`, format and empty text, and a file's type (one the API takes) and size (1 to 52,428,800 bytes); a file whose type cannot be told from its name or its first bytes raises ArgumentError.
+- The README's Knowledge section: creating a knowledge base, adding documents and waiting for them, pinning and scoping, a decision with knowledge and its citations, search, the errors and the limits.
+- The conformance tests run suite 1.23.
+
+### Changed
+
+- A 529 `booster_unavailable` whose `details` reason is `ingestion_delayed` is raised at once, never retried.
+- The API's 422 with no list of entries (`invalid_text`) is a `ValidationError` whose `entries` is an empty Array.
+
 ## [0.3.0] - Unreleased
 
 Implements version 1.3 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.3"`): boosters and fine-tuned models.
