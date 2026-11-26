@@ -230,7 +230,8 @@ module Conformance
   end
 
   def norm_usage(usage)
-    usage && { "input_tokens" => usage.input_tokens, "output_tokens" => usage.output_tokens,
+    usage && { "input_tokens" => usage.input_tokens, "image_tokens" => usage.image_tokens,
+               "video_tokens" => usage.video_tokens, "output_tokens" => usage.output_tokens,
                "video_frames" => usage.video_frames, "video_seconds" => usage.video_seconds,
                "booster_tokens" => usage.booster_tokens, "boosters" => usage.boosters,
                "cost" => norm_cost(usage.cost) }

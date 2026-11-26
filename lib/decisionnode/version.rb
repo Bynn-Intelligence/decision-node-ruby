@@ -2,8 +2,8 @@
 
 class DecisionNode
   # The version of this gem.
-  VERSION = "0.4.1"
+  VERSION = "0.5.0"
 
   # The version of the DecisionNode SDK surface this gem implements.
-  SPEC_VERSION = "1.4"
+  SPEC_VERSION = "1.5"
 end

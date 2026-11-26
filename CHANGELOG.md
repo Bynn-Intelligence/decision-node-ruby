@@ -4,6 +4,18 @@ All notable changes to this gem are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the gem uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - Unreleased
+
+Implements version 1.5 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.5"`): the image and video shares of the input tokens, so callers can bill or budget vision tokens at their own price. Passes conformance suite 1.28.
+
+### Added
+
+- `Usage#image_tokens` and `Usage#video_tokens` (an Integer or `nil`): the share of `usage.input_tokens` that came from images and from videos, read from the `x-decisionnode-image-tokens` and `x-decisionnode-video-tokens` response headers on every call that returns a `Decision`. Each is `nil` when its header is absent (the server sends it only for a request with images or videos), empty, or not a whole number from 0 to 2^31 - 1 after trimming spaces; such a header never fails the decision. Both are read as sent, never added to or taken from another count and never priced. A batch result's decision reads `nil`, since its line carries no such headers. `raw` is unchanged. Both are new members at the end of the `Usage` struct, so existing positional use is unchanged.
+
+### Changed
+
+- `SPEC_VERSION` is `"1.5"`.
+
 ## [0.4.1] - Unreleased
 
 Implements version 1.4 of the DecisionNode SDK surface (`DecisionNode::SPEC_VERSION` is `"1.4"`): knowledge.

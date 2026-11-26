@@ -295,8 +295,16 @@ class DecisionNode
   # of `input_tokens` the boosters' readings take) and `boosters` (the booster
   # calls billed); `cost`, what the answer cost (a Cost). Each is nil when the
   # response has none.
+  #
+  # `image_tokens` and `video_tokens` are the shares of `input_tokens` that
+  # came from images and from videos (Integers), read from the
+  # `x-decisionnode-image-tokens` and `x-decisionnode-video-tokens` headers as
+  # sent: never added to or taken from another count. Each is nil for a
+  # request without images (or videos), since the server sends the header only
+  # when the share is above 0, and when the header is not a whole number from 0
+  # to 2^31 - 1.
   Usage = Struct.new(:input_tokens, :output_tokens, :video_frames, :video_seconds, :booster_tokens, :boosters,
-                     :cost)
+                     :cost, :image_tokens, :video_tokens)
 
   # What an answer cost, Usage#cost: `usd` in all, `model_usd` for the model,
   # `boosters_usd` for the boosters (each the JSON number as received, in USD)
@@ -442,7 +450,9 @@ class DecisionNode
                          usage["video_seconds"].is_a?(Numeric) ? usage["video_seconds"] : nil,
                          usage["booster_tokens"].is_a?(Integer) ? usage["booster_tokens"] : nil,
                          usage["boosters"].is_a?(Integer) ? usage["boosters"] : nil,
-                         Cost.parse(usage["cost"]))
+                         Cost.parse(usage["cost"]),
+                         parse_token_header(headers["x-decisionnode-image-tokens"]),
+                         parse_token_header(headers["x-decisionnode-video-tokens"]))
       @evidence = Evidence.map(body["evidence"])
       @warnings = body["warnings"].is_a?(Array) ? body["warnings"].grep(String).freeze : [].freeze
       @request_id = headers["x-request-id"]
@@ -462,6 +472,23 @@ class DecisionNode
     end
 
     private
+
+    # The largest token count a header may carry, 2^31 - 1.
+    MAX_HEADER_TOKENS = (2**31) - 1
+    private_constant :MAX_HEADER_TOKENS
+
+    # A token count from a header: ASCII digits only after trimming spaces,
+    # from 0 to 2^31 - 1. Anything else (absent, empty, a sign, a fraction,
+    # too large) is nil, never an error and never 0.
+    def parse_token_header(value)
+      return nil unless value.is_a?(String)
+
+      digits = value.gsub(/\A[ \t]+|[ \t]+\z/, "")
+      return nil unless digits.match?(/\A[0-9]+\z/)
+
+      n = Integer(digits, 10)
+      n <= MAX_HEADER_TOKENS ? n : nil
+    end
 
     def parse_latency(value)
       return nil if value.nil?
